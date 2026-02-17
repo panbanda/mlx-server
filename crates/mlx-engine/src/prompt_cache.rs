@@ -81,12 +81,19 @@ impl PrefixCache {
             return;
         }
 
-        // Evict if at capacity
-        if self.entries.len() >= self.max_entries {
+        let key = hash_tokens(&prefix_tokens);
+
+        // Skip if key collides with a different token sequence
+        if let Some(existing) = self.entries.get(&key) {
+            if existing.prefix_tokens != prefix_tokens {
+                return;
+            }
+        }
+
+        if !self.entries.contains_key(&key) && self.entries.len() >= self.max_entries {
             self.evict_lru();
         }
 
-        let key = hash_tokens(&prefix_tokens);
         self.entries.insert(
             key,
             CacheEntry {

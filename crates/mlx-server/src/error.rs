@@ -34,11 +34,14 @@ pub enum ServerError {
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let (status, error_type, message) = match &self {
-            ServerError::Engine(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                e.to_string(),
-            ),
+            ServerError::Engine(e) => {
+                tracing::error!(error = %e, "Engine error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "Internal server error".to_owned(),
+                )
+            }
             ServerError::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",

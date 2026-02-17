@@ -121,7 +121,9 @@ impl Attention {
         let dim = args.hidden_size;
         let n_heads = args.num_attention_heads;
         let n_kv_heads = args.num_key_value_heads;
-        let head_dim = args.head_dim();
+        let head_dim = args
+            .checked_head_dim()
+            .map_err(|e| Exception::custom(e.to_string()))?;
         let head_dim_f32 = f32::from(
             i16::try_from(head_dim).map_err(|_| Exception::custom("head_dim out of i16 range"))?,
         );
@@ -427,6 +429,12 @@ where
 
         if cache.is_empty() {
             *cache = (0..self.layers.len()).map(|_| None).collect();
+        } else if cache.len() != self.layers.len() {
+            return Err(Exception::custom(format!(
+                "kv_cache length ({}) must match num layers ({})",
+                cache.len(),
+                self.layers.len()
+            )));
         }
 
         for (layer, layer_cache) in self.layers.iter_mut().zip(cache.iter_mut()) {

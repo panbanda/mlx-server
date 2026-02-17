@@ -111,7 +111,8 @@ fn create_message_stream(
 
     let msg_id = format!("msg_{}", uuid::Uuid::new_v4().simple());
     let model = req.model;
-    let prompt_token_count = u32::try_from(prompt_tokens.len()).unwrap_or(0);
+    let prompt_token_count = u32::try_from(prompt_tokens.len())
+        .map_err(|_| ServerError::BadRequest("Token count overflow".to_owned()))?;
 
     // Spawn generation before creating the stream so prefill starts immediately
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);

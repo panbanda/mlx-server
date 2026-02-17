@@ -126,7 +126,12 @@ impl SimpleEngine {
                 "Reusing cached prefix"
             );
             let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
-            (suffix.to_vec(), matched.kv_cache)
+            if suffix.is_empty() {
+                // Full prefix match -- fall back to full prompt to avoid empty forward pass
+                (prompt_tokens.to_vec(), Vec::new())
+            } else {
+                (suffix.to_vec(), matched.kv_cache)
+            }
         } else {
             (prompt_tokens.to_vec(), Vec::new())
         };
@@ -271,7 +276,11 @@ impl SimpleEngine {
                 "Reusing cached prefix (streaming)"
             );
             let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
-            (suffix.to_vec(), matched.kv_cache)
+            if suffix.is_empty() {
+                (prompt_tokens.to_vec(), Vec::new())
+            } else {
+                (suffix.to_vec(), matched.kv_cache)
+            }
         } else {
             (prompt_tokens.to_vec(), Vec::new())
         };
@@ -304,18 +313,26 @@ impl SimpleEngine {
             .tokenizer
             .decode(&all_tokens, true)
             .map_err(|e| EngineError::Tokenization(e.to_string()))?;
-        let first_text = first_decoded.clone();
+        let (first_text, first_hit_stop) = if !stop_sequences.is_empty() {
+            if let Some(truncated) = check_stop_sequences(&first_decoded, stop_sequences) {
+                (truncated, true)
+            } else {
+                (first_decoded.clone(), false)
+            }
+        } else {
+            (first_decoded.clone(), false)
+        };
         let mut prev_decoded_len = first_decoded.len();
 
         let first_is_eos = self.eos_token_ids.contains(&first_token_id);
-        let finished = first_is_eos || 1 >= max_tokens;
+        let finished = first_is_eos || first_hit_stop || 1 >= max_tokens;
 
         // Send first token; if receiver dropped, stop early
         if sender
             .blocking_send(StreamingOutput {
                 new_text: first_text,
                 finished,
-                finish_reason: if first_is_eos {
+                finish_reason: if first_is_eos || first_hit_stop {
                     Some("stop".to_owned())
                 } else if 1 >= max_tokens {
                     Some("length".to_owned())

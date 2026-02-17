@@ -48,10 +48,15 @@ pub fn parse_tool_calls(text: &str) -> ToolParseResult {
 
                 match after_open.find(TOOL_CALL_CLOSE) {
                     Some(end_pos) => {
-                        let call_content = after_open.get(..end_pos).unwrap_or_default().trim();
+                        let raw_block = after_open.get(..end_pos).unwrap_or_default();
+                        let call_content = raw_block.trim();
 
                         if let Some(parsed) = try_parse_tool_call(call_content) {
                             tool_calls.push(parsed);
+                        } else {
+                            result_text.push_str(TOOL_CALL_OPEN);
+                            result_text.push_str(raw_block);
+                            result_text.push_str(TOOL_CALL_CLOSE);
                         }
 
                         remaining = after_open
@@ -148,6 +153,7 @@ I've requested the weather."#;
         let input = "<tool_call>\nnot valid json\n</tool_call>";
         let result = parse_tool_calls(input);
         assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("not valid json"));
     }
 
     #[test]

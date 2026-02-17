@@ -5,7 +5,7 @@ use clap::Parser;
 #[command(author, version, about)]
 pub struct ServerConfig {
     /// Path to the model directory (local path or HuggingFace model name).
-    #[arg(long, default_value = "~/dev/models/Arch-Router-1.5B-4bit")]
+    #[arg(long)]
     pub model: String,
 
     /// Host to bind the server to.
