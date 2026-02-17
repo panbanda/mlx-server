@@ -456,12 +456,13 @@ impl SimpleEngine {
 /// Check if any stop sequence appears in the generated text.
 /// Returns Some(truncated_text) if a stop sequence was found, None otherwise.
 fn check_stop_sequences(text: &str, stop_sequences: &[String]) -> Option<String> {
+    let mut earliest: Option<usize> = None;
     for seq in stop_sequences {
         if let Some(pos) = text.find(seq.as_str()) {
-            return Some(text.get(..pos).unwrap_or_default().to_owned());
+            earliest = Some(earliest.map_or(pos, |prev| prev.min(pos)));
         }
     }
-    None
+    earliest.map(|pos| text.get(..pos).unwrap_or_default().to_owned())
 }
 
 /// Extract EOS token IDs from config.json.
