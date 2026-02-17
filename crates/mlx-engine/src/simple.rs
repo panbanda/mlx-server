@@ -159,15 +159,35 @@ impl SimpleEngine {
         let first_token_id: u32 = current_token.item();
         tokens.push(first_token_id);
 
-        // Check first token for stop
+        let first_decoded = self
+            .tokenizer
+            .decode(&tokens, true)
+            .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+
         if self.eos_token_ids.contains(&first_token_id) {
-            let text = self
-                .tokenizer
-                .decode(&tokens, true)
-                .map_err(|e| EngineError::Tokenization(e.to_string()))?;
             return Ok(GenerationOutput {
-                text,
+                text: first_decoded,
                 finish_reason: "stop".to_owned(),
+                prompt_tokens: prompt_len,
+                completion_tokens: 1,
+            });
+        }
+
+        if !stop_sequences.is_empty() {
+            if let Some(truncated) = check_stop_sequences(&first_decoded, stop_sequences) {
+                return Ok(GenerationOutput {
+                    text: truncated,
+                    finish_reason: "stop".to_owned(),
+                    prompt_tokens: prompt_len,
+                    completion_tokens: 1,
+                });
+            }
+        }
+
+        if max_tokens <= 1 {
+            return Ok(GenerationOutput {
+                text: first_decoded,
+                finish_reason: "length".to_owned(),
                 prompt_tokens: prompt_len,
                 completion_tokens: 1,
             });
