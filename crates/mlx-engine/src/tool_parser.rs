@@ -1,0 +1,187 @@
+//! Parse tool calls from model-generated text.
+//!
+//! Qwen models emit tool calls in a specific XML-like format:
+//! ```text
+//! <tool_call>
+//! {"name": "function_name", "arguments": {"arg1": "value1"}}
+//! </tool_call>
+//! ```
+//!
+//! This module extracts those structured tool calls from the raw text.
+
+/// A parsed tool call extracted from model output.
+#[derive(Debug, Clone)]
+pub struct ParsedToolCall {
+    pub name: String,
+    pub arguments: serde_json::Value,
+}
+
+/// Result of parsing model output for tool calls.
+#[derive(Debug, Clone)]
+pub struct ToolParseResult {
+    /// Text content before/outside any tool calls.
+    pub text: String,
+    /// Extracted tool calls (empty if none found).
+    pub tool_calls: Vec<ParsedToolCall>,
+}
+
+const TOOL_CALL_OPEN: &str = "<tool_call>";
+const TOOL_CALL_CLOSE: &str = "</tool_call>";
+
+/// Parse model output text for Qwen-format tool calls.
+///
+/// Returns the non-tool-call text and any extracted tool calls.
+pub fn parse_tool_calls(text: &str) -> ToolParseResult {
+    let mut result_text = String::new();
+    let mut tool_calls = Vec::new();
+    let mut remaining = text;
+
+    loop {
+        match remaining.find(TOOL_CALL_OPEN) {
+            Some(start_pos) => {
+                // Collect text before the tool call tag
+                result_text.push_str(remaining.get(..start_pos).unwrap_or_default());
+
+                let after_open = remaining
+                    .get(start_pos + TOOL_CALL_OPEN.len()..)
+                    .unwrap_or_default();
+
+                match after_open.find(TOOL_CALL_CLOSE) {
+                    Some(end_pos) => {
+                        let call_content = after_open.get(..end_pos).unwrap_or_default().trim();
+
+                        if let Some(parsed) = try_parse_tool_call(call_content) {
+                            tool_calls.push(parsed);
+                        }
+
+                        remaining = after_open
+                            .get(end_pos + TOOL_CALL_CLOSE.len()..)
+                            .unwrap_or_default();
+                    }
+                    None => {
+                        // Unclosed tag -- treat rest as text
+                        result_text.push_str(remaining.get(start_pos..).unwrap_or_default());
+                        break;
+                    }
+                }
+            }
+            None => {
+                result_text.push_str(remaining);
+                break;
+            }
+        }
+    }
+
+    ToolParseResult {
+        text: result_text.trim().to_owned(),
+        tool_calls,
+    }
+}
+
+/// Try to parse a single tool call JSON block.
+fn try_parse_tool_call(content: &str) -> Option<ParsedToolCall> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let obj = value.as_object()?;
+
+    let name = obj.get("name").and_then(|v| v.as_str())?.to_owned();
+
+    let arguments = obj
+        .get("arguments")
+        .cloned()
+        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    Some(ParsedToolCall { name, arguments })
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_no_tool_calls() {
+        let result = parse_tool_calls("Hello, how can I help you?");
+        assert_eq!(result.text, "Hello, how can I help you?");
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_single_tool_call() {
+        let input = r#"<tool_call>
+{"name": "get_weather", "arguments": {"city": "London"}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert!(result.text.is_empty());
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls.first().unwrap().name, "get_weather");
+    }
+
+    #[test]
+    fn test_tool_call_with_surrounding_text() {
+        let input = r#"Let me check the weather for you.
+<tool_call>
+{"name": "get_weather", "arguments": {"city": "Paris"}}
+</tool_call>
+I've requested the weather."#;
+        let result = parse_tool_calls(input);
+        assert!(result.text.contains("Let me check"));
+        assert!(result.text.contains("I've requested"));
+        assert_eq!(result.tool_calls.len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_tool_calls() {
+        let input = r#"<tool_call>
+{"name": "search", "arguments": {"query": "rust"}}
+</tool_call>
+<tool_call>
+{"name": "calculate", "arguments": {"expression": "2+2"}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert_eq!(result.tool_calls.len(), 2);
+        assert_eq!(result.tool_calls.first().unwrap().name, "search");
+        assert_eq!(result.tool_calls.get(1).unwrap().name, "calculate");
+    }
+
+    #[test]
+    fn test_invalid_json_in_tool_call() {
+        let input = "<tool_call>\nnot valid json\n</tool_call>";
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_unclosed_tool_call_tag() {
+        let input = "Text before <tool_call>\n{\"name\": \"test\"}";
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
+    }
+
+    #[test]
+    fn test_tool_call_missing_arguments() {
+        let input = r#"<tool_call>
+{"name": "no_args_tool"}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls.first().unwrap().name, "no_args_tool");
+        assert!(result.tool_calls.first().unwrap().arguments.is_object());
+    }
+
+    #[test]
+    fn test_tool_call_missing_name() {
+        let input = r#"<tool_call>
+{"arguments": {"key": "value"}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+    }
+
+    #[test]
+    fn test_empty_text() {
+        let result = parse_tool_calls("");
+        assert!(result.text.is_empty());
+        assert!(result.tool_calls.is_empty());
+    }
+}
