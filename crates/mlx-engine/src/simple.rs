@@ -99,6 +99,9 @@ impl SimpleEngine {
         top_p: f32,
         stop_sequences: &[String],
     ) -> Result<GenerationOutput, EngineError> {
+        if prompt_tokens.is_empty() {
+            return Err(EngineError::Generation("Prompt is empty".to_owned()));
+        }
         let prompt_len: u32 = prompt_tokens
             .len()
             .try_into()
@@ -269,6 +272,9 @@ impl SimpleEngine {
         stop_sequences: &[String],
         sender: tokio::sync::mpsc::Sender<StreamingOutput>,
     ) -> Result<(), EngineError> {
+        if prompt_tokens.is_empty() {
+            return Err(EngineError::Generation("Prompt is empty".to_owned()));
+        }
         let prompt_len: u32 = prompt_tokens
             .len()
             .try_into()
