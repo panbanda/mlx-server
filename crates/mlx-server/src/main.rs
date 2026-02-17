@@ -61,9 +61,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     tracing::info!(addr = %bind_addr, "Starting server");
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }

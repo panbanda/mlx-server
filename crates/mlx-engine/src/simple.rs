@@ -184,7 +184,7 @@ impl SimpleEngine {
             let token_id: u32 = current_token.item();
             tokens.push(token_id);
 
-            if tokens.len()% 32 == 0 {
+            if tokens.len() % 32 == 0 {
                 eval([&current_token]).map_err(EngineError::Mlx)?;
             }
 
@@ -362,7 +362,7 @@ impl SimpleEngine {
             let token_id: u32 = current_token.item();
             all_tokens.push(token_id);
 
-            if all_tokens.len()% 32 == 0 {
+            if all_tokens.len() % 32 == 0 {
                 eval([&current_token]).map_err(EngineError::Mlx)?;
             }
 
