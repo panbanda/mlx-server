@@ -62,14 +62,14 @@ impl PrefixCache {
             }
         }
 
-        if let Some(key) = best_key
-            && let Some(entry) = self.entries.get_mut(&key)
-        {
-            entry.last_accessed = Instant::now();
-            return Some(PrefixMatch {
-                prefix_len: entry.prefix_tokens.len(),
-                kv_cache: entry.kv_cache.clone(),
-            });
+        if let Some(key) = best_key {
+            if let Some(entry) = self.entries.get_mut(&key) {
+                entry.last_accessed = Instant::now();
+                return Some(PrefixMatch {
+                    prefix_len: entry.prefix_tokens.len(),
+                    kv_cache: entry.kv_cache.clone(),
+                });
+            }
         }
 
         None

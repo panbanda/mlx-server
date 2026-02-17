@@ -13,6 +13,9 @@ unsafe_code = "forbid"
 non_ascii_idents = "forbid"
 
 [workspace.lints.clippy]
+# MSRV compat: these suggest features stabilized after 1.85.0
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
