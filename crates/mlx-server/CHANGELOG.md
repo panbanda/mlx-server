@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.2...mlx-server-v0.1.3) (2026-02-18)
+
+
+### Bug Fixes
+
+* add missing doc comment on ErrorDetail ([ee23882](https://github.com/panbanda/mlx-server/commit/ee238826fe903fdd11ef96dce1ce4641d4234614))
+
 ## [0.1.2](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.1...mlx-server-v0.1.2) (2026-02-18)
 
 
