@@ -14,11 +14,5 @@
     "crates/mlx-server": {
       "component": "mlx-server"
     }
-  },
-  "plugins": [
-    {
-      "type": "cargo-workspace",
-      "merge": true
-    }
-  ]
+  }
 }
