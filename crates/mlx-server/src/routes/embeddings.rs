@@ -20,6 +20,10 @@ pub async fn embeddings(
 ) -> Result<Json<EmbeddingResponse>, ServerError> {
     tracing::warn!("Embeddings endpoint uses placeholder implementation");
 
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let inputs = match &req.input {
         EmbeddingInput::Single(s) => vec![s.clone()],
         EmbeddingInput::Multiple(v) => v.clone(),
@@ -35,8 +39,7 @@ pub async fn embeddings(
     let mut total_tokens: u32 = 0;
 
     for (idx, text) in inputs.iter().enumerate() {
-        let encoding = state
-            .engine
+        let encoding = engine
             .tokenizer()
             .encode(text.as_str(), false)
             .map_err(|e| ServerError::BadRequest(format!("Tokenization error: {e}")))?;
