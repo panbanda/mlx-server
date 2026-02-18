@@ -98,11 +98,11 @@ curl http://localhost:8000/v1/chat/completions \
 With authentication:
 
 ```bash
-mlx-server --api-key sk-my-secret-key
+mlx-server --api-key YOUR_API_KEY
 
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-my-secret-key" \
+  -H "Authorization: Bearer YOUR_API_KEY" \
   -d '{"model": "llama", "messages": [{"role": "user", "content": "Hello!"}]}'
 ```
 
