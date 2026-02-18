@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.3...mlx-server-v0.1.4) (2026-02-18)
+
+
+### Bug Fixes
+
+* add missing doc comments on AppState fields ([6b7e862](https://github.com/panbanda/mlx-server/commit/6b7e8628640765239c8be9b943d7de1e40cd44dd))
+
 ## [0.1.3](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.2...mlx-server-v0.1.3) (2026-02-18)
 
 
