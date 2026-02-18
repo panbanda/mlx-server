@@ -21,8 +21,8 @@ jobs:
       pull-requests: write
 
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      release_created: ${{ steps.release.outputs['mlx-server--release_created'] }}
+      tag_name: ${{ steps.release.outputs['mlx-server--tag_name'] }}
 
     steps:
       - name: Release Please
