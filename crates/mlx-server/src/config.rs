@@ -13,9 +13,9 @@ use serde::{Deserialize, Serialize};
     about = "MLX Server - OpenAI-compatible inference server for Apple Silicon"
 )]
 struct CliArgs {
-    /// Path to the model directory or HuggingFace model ID.
-    #[arg(long)]
-    model: Option<String>,
+    /// Path to a model directory or HuggingFace model ID. May be repeated to serve multiple models.
+    #[arg(long = "model", action = clap::ArgAction::Append)]
+    models: Vec<String>,
 
     /// Host to bind the server to.
     #[arg(long)]
@@ -50,7 +50,7 @@ struct CliArgs {
 /// 3. CLI arguments
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    pub model: String,
+    pub models: Vec<String>,
     pub host: String,
     pub port: u16,
     pub max_tokens: u32,
@@ -62,7 +62,7 @@ pub struct ServerConfig {
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
-            model: default_model_path(),
+            models: vec![],
             host: "0.0.0.0".to_owned(),
             port: 8000,
             max_tokens: 32768,
@@ -71,22 +71,6 @@ impl Default for ServerConfig {
             timeout: 300.0,
         }
     }
-}
-
-/// Default model directory: `~/.cache/huggingface/hub/`
-///
-/// This matches the standard HuggingFace cache location shared with
-/// mlx-lm, transformers, and other HF ecosystem tools.
-fn default_model_path() -> String {
-    directories::BaseDirs::new()
-        .map(|dirs| {
-            dirs.cache_dir()
-                .join("huggingface")
-                .join("hub")
-                .to_string_lossy()
-                .into_owned()
-        })
-        .unwrap_or_else(|| "~/.cache/huggingface/hub".to_owned())
 }
 
 impl ServerConfig {
@@ -98,9 +82,9 @@ impl ServerConfig {
             .merge(Serialized::defaults(ServerConfig::default()))
             .merge(Env::prefixed("MLX_SERVER_"));
 
-        // Overlay CLI args (only non-None values)
-        if let Some(ref model) = cli.model {
-            figment = figment.merge(Serialized::default("model", model));
+        // Overlay CLI args (only non-empty values)
+        if !cli.models.is_empty() {
+            figment = figment.merge(Serialized::default("models", &cli.models));
         }
         if let Some(ref host) = cli.host {
             figment = figment.merge(Serialized::default("host", host));
@@ -127,6 +111,11 @@ impl ServerConfig {
     }
 
     fn validate(&self) -> Result<(), Box<figment::Error>> {
+        if self.models.is_empty() {
+            return Err(Box::new(figment::Error::from(
+                "at least one --model is required".to_owned(),
+            )));
+        }
         if self.timeout < 0.0 {
             return Err(Box::new(figment::Error::from(
                 "timeout must not be negative".to_owned(),
@@ -157,19 +146,13 @@ mod tests {
     #[test]
     fn test_default_config_has_reasonable_values() {
         let config = ServerConfig::default();
+        assert!(config.models.is_empty());
         assert_eq!(config.host, "0.0.0.0");
         assert_eq!(config.port, 8000);
         assert_eq!(config.max_tokens, 32768);
         assert!(config.api_key.is_none());
         assert_eq!(config.rate_limit, 0);
         assert!((config.timeout - 300.0).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn test_default_model_path_contains_huggingface() {
-        let path = default_model_path();
-        assert!(path.contains("huggingface"));
-        assert!(path.contains("hub"));
     }
 
     #[test]
@@ -221,8 +204,28 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_models_rejected() {
+        let config = ServerConfig::default();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_single_model_accepted() {
+        let config = config_with("models", vec!["some/model"]);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_multiple_models_accepted() {
+        let config = config_with("models", vec!["model/a", "model/b"]);
+        assert_eq!(config.models.len(), 2);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
     fn test_negative_timeout_rejected() {
         let result: Result<ServerConfig, _> = test_figment()
+            .merge(Serialized::default("models", vec!["some/model"]))
             .merge(Serialized::default("timeout", -1.0_f64))
             .extract();
         let config = result.unwrap();
@@ -239,12 +242,6 @@ mod tests {
     fn test_rate_limit_nonzero_means_enabled() {
         let config = config_with("rate_limit", 60_u32);
         assert_eq!(config.rate_limit, 60);
-    }
-
-    #[test]
-    fn test_empty_string_model_path() {
-        let config = config_with("model", "");
-        assert_eq!(config.model, "");
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -16,9 +17,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = ServerConfig::load()?;
 
-    tracing::info!(model = %config.model, "Loading model");
-    let engine = SimpleEngine::load(&config.model)?;
-    tracing::info!(model_name = %engine.model_name(), "Model loaded");
+    let mut engines = HashMap::new();
+    for model_path in &config.models {
+        tracing::info!(model = %model_path, "Loading model");
+        let engine = SimpleEngine::load(model_path)?;
+        let name = engine.model_name().to_owned();
+        tracing::info!(model_name = %name, "Model loaded");
+        engines.insert(name, Arc::new(engine));
+    }
 
     let timeout_secs = config.timeout;
     if !timeout_secs.is_finite() || timeout_secs <= 0.0 {
@@ -28,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rate_limit = config.rate_limit;
     let bind_addr = format!("{}:{}", config.host, config.port);
 
-    let shared_state = Arc::new(AppState { engine, config });
+    let shared_state = Arc::new(AppState { engines, config });
 
     let app = build_router(shared_state, timeout_secs, api_key, rate_limit);
 

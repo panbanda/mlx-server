@@ -48,6 +48,10 @@ async fn chat_completions_non_streaming(
     state: SharedState,
     req: ChatCompletionRequest,
 ) -> Result<ChatCompletionResponse, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
@@ -56,13 +60,12 @@ async fn chat_completions_non_streaming(
     let messages = convert_messages(&req.messages);
     let tools = req.tools.as_deref();
 
-    let prompt_tokens = state
-        .engine
+    let prompt_tokens = engine
         .prepare_chat_prompt(&messages, tools)
         .map_err(ServerError::Engine)?;
 
     let output = tokio::task::spawn_blocking(move || {
-        state.engine.generate(
+        engine.generate(
             &prompt_tokens,
             max_tokens,
             temperature,
@@ -138,6 +141,11 @@ fn chat_completions_stream(
             "Streaming with tool_calls is not yet supported".to_owned(),
         ));
     }
+
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
@@ -146,8 +154,7 @@ fn chat_completions_stream(
     let messages = convert_messages(&req.messages);
     let tools = req.tools.as_deref();
 
-    let prompt_tokens = state
-        .engine
+    let prompt_tokens = engine
         .prepare_chat_prompt(&messages, tools)
         .map_err(ServerError::Engine)?;
 
@@ -158,7 +165,7 @@ fn chat_completions_stream(
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
 
     tokio::task::spawn_blocking(move || {
-        let result = state.engine.generate_streaming(
+        let result = engine.generate_streaming(
             &prompt_tokens,
             max_tokens,
             temperature,

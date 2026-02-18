@@ -28,6 +28,9 @@ pub enum ServerError {
     #[error("Bad request: {0}")]
     BadRequest(String),
 
+    #[error("Model not found: {0}")]
+    ModelNotFound(String),
+
     #[error("Internal error: {0}")]
     InternalError(String),
 }
@@ -47,6 +50,11 @@ impl IntoResponse for ServerError {
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
                 msg.clone(),
+            ),
+            ServerError::ModelNotFound(model) => (
+                StatusCode::NOT_FOUND,
+                "model_not_found",
+                format!("Model '{model}' is not loaded"),
             ),
             ServerError::InternalError(msg) => {
                 tracing::error!(error = %msg, "Internal error");

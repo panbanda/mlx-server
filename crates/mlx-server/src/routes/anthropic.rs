@@ -46,6 +46,10 @@ async fn create_message_non_streaming(
     state: SharedState,
     req: CreateMessageRequest,
 ) -> Result<CreateMessageResponse, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens;
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
@@ -54,13 +58,12 @@ async fn create_message_non_streaming(
     let engine_messages = anthropic_messages_to_engine(&req.messages, req.system.as_deref());
     let tools = req.tools.as_deref();
 
-    let prompt_tokens = state
-        .engine
+    let prompt_tokens = engine
         .prepare_chat_prompt(&engine_messages, tools)
         .map_err(ServerError::Engine)?;
 
     let output = tokio::task::spawn_blocking(move || {
-        state.engine.generate(
+        engine.generate(
             &prompt_tokens,
             max_tokens,
             temperature,
@@ -96,6 +99,10 @@ fn create_message_stream(
     state: SharedState,
     req: CreateMessageRequest,
 ) -> Result<impl Stream<Item = Result<Event, Infallible>>, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens;
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
@@ -104,8 +111,7 @@ fn create_message_stream(
     let engine_messages = anthropic_messages_to_engine(&req.messages, req.system.as_deref());
     let tools = req.tools.as_deref();
 
-    let prompt_tokens = state
-        .engine
+    let prompt_tokens = engine
         .prepare_chat_prompt(&engine_messages, tools)
         .map_err(ServerError::Engine)?;
 
@@ -118,7 +124,7 @@ fn create_message_stream(
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
 
     tokio::task::spawn_blocking(move || {
-        let result = state.engine.generate_streaming(
+        let result = engine.generate_streaming(
             &prompt_tokens,
             max_tokens,
             temperature,
@@ -235,11 +241,14 @@ pub async fn count_tokens(
     State(state): State<SharedState>,
     Json(req): Json<CountTokensRequest>,
 ) -> Result<Json<CountTokensResponse>, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let engine_messages = anthropic_messages_to_engine(&req.messages, req.system.as_deref());
     let tools = req.tools.as_deref();
 
-    let tokens = state
-        .engine
+    let tokens = engine
         .prepare_chat_prompt(&engine_messages, tools)
         .map_err(ServerError::Engine)?;
 

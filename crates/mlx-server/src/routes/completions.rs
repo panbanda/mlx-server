@@ -43,20 +43,23 @@ async fn completions_non_streaming(
     state: SharedState,
     req: CompletionRequest,
 ) -> Result<CompletionResponse, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
     let stop_sequences = StopSequence::extract(req.stop);
 
-    let encoding = state
-        .engine
+    let encoding = engine
         .tokenizer()
         .encode(req.prompt.as_str(), false)
         .map_err(|e| ServerError::BadRequest(format!("Tokenization error: {e}")))?;
     let prompt_tokens = encoding.get_ids().to_vec();
 
     let output = tokio::task::spawn_blocking(move || {
-        state.engine.generate(
+        engine.generate(
             &prompt_tokens,
             max_tokens,
             temperature,
@@ -92,13 +95,16 @@ fn completions_stream(
     state: SharedState,
     req: CompletionRequest,
 ) -> Result<impl Stream<Item = Result<Event, Infallible>>, ServerError> {
+    let engine = state
+        .engine_for(&req.model)
+        .ok_or_else(|| ServerError::ModelNotFound(req.model.clone()))?;
+
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
     let stop_sequences = StopSequence::extract(req.stop);
 
-    let encoding = state
-        .engine
+    let encoding = engine
         .tokenizer()
         .encode(req.prompt.as_str(), false)
         .map_err(|e| ServerError::BadRequest(format!("Tokenization error: {e}")))?;
@@ -111,7 +117,7 @@ fn completions_stream(
     let (tx, mut rx) = tokio::sync::mpsc::channel(32);
 
     tokio::task::spawn_blocking(move || {
-        let result = state.engine.generate_streaming(
+        let result = engine.generate_streaming(
             &prompt_tokens,
             max_tokens,
             temperature,
