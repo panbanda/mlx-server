@@ -129,6 +129,15 @@ mod tests {
     use super::*;
     use mlx_rs::Array;
 
+    /// Create a zero-filled KV pair with shape [1, n_heads, seq_len, head_dim].
+    fn make_kv_pair(seq_len: i32, head_dim: i32) -> (Array, Array) {
+        let shape = [1, 2, seq_len, head_dim];
+        (
+            Array::zeros::<f32>(&shape).unwrap(),
+            Array::zeros::<f32>(&shape).unwrap(),
+        )
+    }
+
     #[test]
     fn test_concat_cache_initial_update() {
         let mut cache = ConcatKeyValueCache::new();
@@ -136,9 +145,7 @@ mod tests {
         assert!(cache.max_size().is_none());
         assert!(!cache.is_quantized());
 
-        let keys = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
-        let values = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
-
+        let (keys, values) = make_kv_pair(4, 8);
         let (result_keys, result_values) = cache.update_and_fetch(keys, values).unwrap();
         assert_eq!(result_keys.shape(), &[1, 2, 4, 8]);
         assert_eq!(result_values.shape(), &[1, 2, 4, 8]);
@@ -149,16 +156,87 @@ mod tests {
     fn test_concat_cache_sequential_updates() {
         let mut cache = ConcatKeyValueCache::new();
 
-        let keys1 = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
-        let values1 = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
+        let (keys1, values1) = make_kv_pair(4, 8);
         cache.update_and_fetch(keys1, values1).unwrap();
         assert_eq!(cache.offset(), 4);
 
-        let keys2 = Array::zeros::<f32>(&[1, 2, 1, 8]).unwrap();
-        let values2 = Array::zeros::<f32>(&[1, 2, 1, 8]).unwrap();
+        let (keys2, values2) = make_kv_pair(1, 8);
         let (result_keys, result_values) = cache.update_and_fetch(keys2, values2).unwrap();
         assert_eq!(result_keys.shape(), &[1, 2, 5, 8]);
         assert_eq!(result_values.shape(), &[1, 2, 5, 8]);
         assert_eq!(cache.offset(), 5);
+    }
+
+    #[test]
+    fn test_concat_cache_many_sequential_updates() {
+        let mut cache = ConcatKeyValueCache::new();
+
+        let (keys, values) = make_kv_pair(3, 8);
+        cache.update_and_fetch(keys, values).unwrap();
+        assert_eq!(cache.offset(), 3);
+
+        for i in 0..5 {
+            let (k, v) = make_kv_pair(1, 8);
+            let (rk, rv) = cache.update_and_fetch(k, v).unwrap();
+            let expected_seq = 3 + i + 1;
+            assert_eq!(cache.offset(), expected_seq);
+            assert_eq!(rk.shape(), &[1, 2, expected_seq, 8]);
+            assert_eq!(rv.shape(), &[1, 2, expected_seq, 8]);
+        }
+
+        assert_eq!(cache.offset(), 8);
+    }
+
+    #[test]
+    fn test_concat_cache_default_values() {
+        let cache = ConcatKeyValueCache::default();
+        assert_eq!(cache.offset(), 0);
+        assert!(cache.max_size().is_none());
+        assert!(!cache.is_quantized());
+        assert!(cache.group_size().is_none());
+        assert!(cache.bits().is_none());
+    }
+
+    #[test]
+    fn test_concat_cache_mismatched_shapes_error() {
+        let mut cache = ConcatKeyValueCache::new();
+
+        let (keys1, values1) = make_kv_pair(4, 8);
+        cache.update_and_fetch(keys1, values1).unwrap();
+
+        // Mismatched head_dim (16 instead of 8)
+        let (keys2, values2) = make_kv_pair(1, 16);
+        let result = cache.update_and_fetch(keys2, values2);
+        assert!(
+            result.is_err(),
+            "Mismatched head_dim should fail concatenation"
+        );
+    }
+
+    #[test]
+    fn test_concat_cache_1d_keys_error() {
+        let mut cache = ConcatKeyValueCache::new();
+        let keys = Array::zeros::<f32>(&[4]).unwrap();
+        let values = Array::zeros::<f32>(&[4]).unwrap();
+        let result = cache.update_and_fetch(keys, values);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_concat_cache_ref_mut_delegation() {
+        let mut cache = ConcatKeyValueCache::new();
+        let cache_ref: &mut ConcatKeyValueCache = &mut cache;
+
+        assert_eq!(KeyValueCache::offset(&cache_ref), 0);
+        assert!(KeyValueCache::max_size(&cache_ref).is_none());
+        assert!(!KeyValueCache::is_quantized(&cache_ref));
+        assert!(KeyValueCache::group_size(&cache_ref).is_none());
+        assert!(KeyValueCache::bits(&cache_ref).is_none());
+
+        let (keys, values) = make_kv_pair(3, 8);
+        let (rk, rv) = cache_ref.update_and_fetch(keys, values).unwrap();
+        assert_eq!(rk.shape(), &[1, 2, 3, 8]);
+        assert_eq!(rv.shape(), &[1, 2, 3, 8]);
+        assert_eq!(KeyValueCache::offset(&cache_ref), 3);
     }
 }

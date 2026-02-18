@@ -189,26 +189,26 @@ mod tests {
         assert_eq!(cache_layer_count(&matched.cache), 4);
     }
 
-    #[test]
-    fn test_no_match_for_different_prefix() {
+    fn assert_no_prefix_match(
+        stored_range: std::ops::Range<u32>,
+        query_range: std::ops::Range<u32>,
+    ) {
         let mut cache = PrefixCache::new(10);
-        let prefix: Vec<u32> = (0..32).collect();
+        let prefix: Vec<u32> = stored_range.collect();
         cache.store(prefix, make_dummy_cache(4));
 
-        // Different token sequence
-        let query: Vec<u32> = (100..132).collect();
+        let query: Vec<u32> = query_range.collect();
         assert!(cache.find_longest_prefix(&query).is_none());
     }
 
     #[test]
-    fn test_prefix_too_short_ignored() {
-        let mut cache = PrefixCache::new(10);
-        // Only 8 tokens (below min threshold of 16)
-        let prefix: Vec<u32> = (0..8).collect();
-        cache.store(prefix, make_dummy_cache(4));
+    fn test_no_match_for_different_prefix() {
+        assert_no_prefix_match(0..32, 100..132);
+    }
 
-        let query: Vec<u32> = (0..32).collect();
-        assert!(cache.find_longest_prefix(&query).is_none());
+    #[test]
+    fn test_prefix_too_short_ignored() {
+        assert_no_prefix_match(0..8, 0..32);
     }
 
     #[test]
@@ -275,44 +275,30 @@ mod tests {
         assert_eq!(result.unwrap().prefix_len, 50);
     }
 
-    #[test]
-    fn test_store_same_tokens_overwrites() {
-        let mut cache = PrefixCache::new(10);
+    fn assert_overwrite_uses_latest(capacity: usize, first_layers: usize, second_layers: usize) {
+        let mut cache = PrefixCache::new(capacity);
         let prefix: Vec<u32> = (0..32).collect();
 
-        cache.store(prefix.clone(), make_dummy_cache(2));
+        cache.store(prefix.clone(), make_dummy_cache(first_layers));
         assert_eq!(cache.len(), 1);
 
-        // Store again with same tokens but different cache layer count.
-        // This is NOT a collision (same hash, same tokens), so it should overwrite.
-        cache.store(prefix.clone(), make_dummy_cache(8));
+        cache.store(prefix.clone(), make_dummy_cache(second_layers));
         assert_eq!(cache.len(), 1);
 
         let mut query = prefix;
         query.push(999);
         let result = cache.find_longest_prefix(&query).unwrap();
-        // The cache should reflect the second store (8 layers)
-        assert_eq!(cache_layer_count(&result.cache), 8);
+        assert_eq!(cache_layer_count(&result.cache), second_layers);
+    }
+
+    #[test]
+    fn test_store_same_tokens_overwrites() {
+        assert_overwrite_uses_latest(10, 2, 8);
     }
 
     #[test]
     fn test_overwrite_does_not_trigger_eviction() {
-        // With capacity 1, storing the same prefix twice should not evict anything
-        // because the key already exists and the `contains_key` guard prevents eviction.
-        let mut cache = PrefixCache::new(1);
-        let prefix: Vec<u32> = (0..32).collect();
-
-        cache.store(prefix.clone(), make_dummy_cache(2));
-        assert_eq!(cache.len(), 1);
-
-        // Overwrite with same prefix -- should NOT evict (key already present)
-        cache.store(prefix.clone(), make_dummy_cache(4));
-        assert_eq!(cache.len(), 1);
-
-        let mut query = prefix;
-        query.push(999);
-        let result = cache.find_longest_prefix(&query).unwrap();
-        assert_eq!(cache_layer_count(&result.cache), 4);
+        assert_overwrite_uses_latest(1, 2, 4);
     }
 
     #[test]
@@ -371,5 +357,91 @@ mod tests {
         let mut query_c = prefix_c;
         query_c.push(999);
         assert!(cache.find_longest_prefix(&query_c).is_some());
+    }
+
+    #[test]
+    fn test_find_longest_prefix_exactly_at_minimum_length() {
+        let mut cache = PrefixCache::new(10);
+        // Exactly 16 tokens -- the minimum prefix length
+        let prefix: Vec<u32> = (0..16).collect();
+        cache.store(prefix.clone(), make_dummy_cache(4));
+
+        let mut query: Vec<u32> = prefix;
+        query.push(999);
+        let result = cache.find_longest_prefix(&query);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().prefix_len, 16);
+    }
+
+    #[test]
+    fn test_find_longest_prefix_just_under_minimum_length() {
+        let mut cache = PrefixCache::new(10);
+        // 15 tokens -- one below the minimum
+        let prefix: Vec<u32> = (0..15).collect();
+        cache.store(prefix.clone(), make_dummy_cache(4));
+        assert_eq!(cache.len(), 1); // stored, but won't match
+
+        let mut query: Vec<u32> = prefix;
+        query.push(999);
+        let result = cache.find_longest_prefix(&query);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_multiple_overlapping_prefixes_correct_longest() {
+        let mut cache = PrefixCache::new(10);
+
+        // Store three prefixes of different lengths, all sharing a common start
+        let short: Vec<u32> = (0..16).collect();
+        let medium: Vec<u32> = (0..32).collect();
+        let long: Vec<u32> = (0..64).collect();
+
+        cache.store(short, make_dummy_cache(1));
+        cache.store(medium, make_dummy_cache(2));
+        cache.store(long, make_dummy_cache(3));
+        assert_eq!(cache.len(), 3);
+
+        // Query that matches all three; longest (64) should win
+        let query: Vec<u32> = (0..100).collect();
+        let result = cache.find_longest_prefix(&query).unwrap();
+        assert_eq!(result.prefix_len, 64);
+        assert_eq!(cache_layer_count(&result.cache), 3);
+
+        // Query that only matches short and medium (not long)
+        let shorter_query: Vec<u32> = (0..40).collect();
+        let result2 = cache.find_longest_prefix(&shorter_query).unwrap();
+        assert_eq!(result2.prefix_len, 32);
+        assert_eq!(cache_layer_count(&result2.cache), 2);
+
+        // Query that only matches short
+        let shortest_query: Vec<u32> = (0..20).collect();
+        let result3 = cache.find_longest_prefix(&shortest_query).unwrap();
+        assert_eq!(result3.prefix_len, 16);
+        assert_eq!(cache_layer_count(&result3.cache), 1);
+    }
+
+    #[test]
+    fn test_len_and_is_empty_after_operations() {
+        let mut cache = PrefixCache::new(5);
+
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
+
+        let p1: Vec<u32> = (0..32).collect();
+        cache.store(p1, make_dummy_cache(1));
+        assert!(!cache.is_empty());
+        assert_eq!(cache.len(), 1);
+
+        let p2: Vec<u32> = (100..132).collect();
+        cache.store(p2, make_dummy_cache(1));
+        assert_eq!(cache.len(), 2);
+
+        let p3: Vec<u32> = (200..232).collect();
+        cache.store(p3, make_dummy_cache(1));
+        assert_eq!(cache.len(), 3);
+
+        cache.clear();
+        assert!(cache.is_empty());
+        assert_eq!(cache.len(), 0);
     }
 }

@@ -169,4 +169,68 @@ mod tests {
         assert!(token_hash_to_index(u32::MAX, 384) < 384);
         assert!(token_hash_to_index(12345, 384) < 384);
     }
+
+    #[test]
+    fn test_compute_token_embedding_very_large_token_ids() {
+        let embedding = compute_token_embedding(&[u32::MAX, u32::MAX - 1, u32::MAX - 2]);
+        assert_eq!(embedding.len(), 384);
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_compute_token_embedding_duplicate_token_ids() {
+        let embedding = compute_token_embedding(&[42, 42, 42, 42]);
+        assert_eq!(embedding.len(), 384);
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+        // Duplicate tokens all hash to the same bins, so after L2 normalization
+        // the direction is identical to a single token. Verify that the
+        // pre-normalization magnitudes differ by checking a non-zero element.
+        let single = compute_token_embedding(&[42]);
+        // Both are normalized to unit length, so the vectors point in the same
+        // direction. This is correct behavior for the bag-of-tokens approach.
+        assert_eq!(embedding, single);
+    }
+
+    #[test]
+    fn test_compute_token_embedding_many_tokens() {
+        let token_ids: Vec<u32> = (0..1000).collect();
+        let embedding = compute_token_embedding(&token_ids);
+        assert_eq!(embedding.len(), 384);
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_token_hash_to_index_dim_one() {
+        assert_eq!(token_hash_to_index(0, 1), 0);
+        assert_eq!(token_hash_to_index(u32::MAX, 1), 0);
+        assert_eq!(token_hash_to_index(12345, 1), 0);
+    }
+
+    #[test]
+    fn test_token_hash_to_index_hash_zero() {
+        let idx = token_hash_to_index(0, 384);
+        assert_eq!(idx, 0);
+    }
+
+    #[test]
+    fn test_token_hash_to_index_hash_u32_max() {
+        let idx = token_hash_to_index(u32::MAX, 384);
+        assert!(idx < 384);
+    }
+
+    #[test]
+    fn test_token_hash_to_index_various_dims() {
+        for dim in [1, 2, 10, 128, 384, 768, 1024] {
+            for hash in [0_u32, 1, 100, 65535, u32::MAX] {
+                let idx = token_hash_to_index(hash, dim);
+                assert!(
+                    idx < dim,
+                    "index {idx} out of bounds for dim {dim} with hash {hash}"
+                );
+            }
+        }
+    }
 }

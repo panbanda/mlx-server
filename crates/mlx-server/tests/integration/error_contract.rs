@@ -21,6 +21,21 @@ async fn extract_response(error: ServerError) -> (StatusCode, serde_json::Value,
     (status, body, content_type)
 }
 
+/// Asserts that the given error produces a masked 500 response
+/// and the leaked detail does not appear in the client message.
+async fn assert_masked_500(error: ServerError, leaked_detail: &str) {
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message, "Internal server error");
+    assert!(
+        !message.contains(leaked_detail),
+        "Internal error detail leaked to client: {leaked_detail}"
+    );
+    assert_eq!(body["error"]["type"], "server_error");
+}
+
 #[tokio::test]
 async fn bad_request_returns_400() {
     let error = ServerError::BadRequest("field 'model' is required".to_owned());
@@ -35,64 +50,40 @@ async fn bad_request_returns_400() {
 
 #[tokio::test]
 async fn internal_error_returns_500_with_masked_message() {
-    let error = ServerError::InternalError("database unreachable".to_owned());
-    let (status, body, _) = extract_response(error).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let message = body["error"]["message"].as_str().unwrap();
-    assert_eq!(message, "Internal server error");
-    assert!(
-        !message.contains("database unreachable"),
-        "Internal error details leaked to client"
-    );
-    assert_eq!(body["error"]["type"], "server_error");
+    assert_masked_500(
+        ServerError::InternalError("database unreachable".to_owned()),
+        "database unreachable",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn engine_error_returns_500_with_masked_message() {
     let engine_err =
         mlx_engine::error::EngineError::Generation("detailed internal stack trace".to_owned());
-    let error = ServerError::Engine(engine_err);
-    let (status, body, _) = extract_response(error).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    // Engine errors must NOT leak internal details to the client
-    let message = body["error"]["message"].as_str().unwrap();
-    assert_eq!(message, "Internal server error");
-    assert!(
-        !message.contains("detailed internal stack trace"),
-        "Engine error details leaked to client"
-    );
-    assert_eq!(body["error"]["type"], "server_error");
+    assert_masked_500(
+        ServerError::Engine(engine_err),
+        "detailed internal stack trace",
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn engine_tokenization_error_masked() {
     let engine_err =
         mlx_engine::error::EngineError::Tokenization("invalid byte 0xFF at position 42".to_owned());
-    let error = ServerError::Engine(engine_err);
-    let (status, body, _) = extract_response(error).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let message = body["error"]["message"].as_str().unwrap();
-    assert!(!message.contains("0xFF"));
+    assert_masked_500(ServerError::Engine(engine_err), "0xFF").await;
 }
 
 #[tokio::test]
 async fn engine_template_error_masked() {
     let engine_err =
         mlx_engine::error::EngineError::Template("missing variable 'content'".to_owned());
-    let error = ServerError::Engine(engine_err);
-    let (status, body, _) = extract_response(error).await;
-
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    let message = body["error"]["message"].as_str().unwrap();
-    assert_eq!(message, "Internal server error");
+    assert_masked_500(ServerError::Engine(engine_err), "missing variable").await;
 }
 
 #[tokio::test]
 async fn error_response_has_openai_shape() {
-    // All error responses must have the shape: { "error": { "message": "...", "type": "...", "code": ... } }
     let error = ServerError::BadRequest("test".to_owned());
     let (_, body, _) = extract_response(error).await;
 
@@ -115,4 +106,37 @@ async fn error_response_content_type_is_json() {
         content_type.contains("application/json"),
         "Expected application/json, got: {content_type}"
     );
+}
+
+#[tokio::test]
+async fn error_response_with_very_long_message() {
+    let long_msg = "a".repeat(5000);
+    let error = ServerError::BadRequest(long_msg.clone());
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message.len(), 5000);
+    assert_eq!(message, long_msg);
+}
+
+#[tokio::test]
+async fn error_response_with_special_characters() {
+    let special_msg = r#"Invalid "field": <script>alert('xss')</script> & more \n\t"#;
+    let error = ServerError::BadRequest(special_msg.to_owned());
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message, special_msg);
+}
+
+#[tokio::test]
+async fn internal_error_with_special_characters_still_masked() {
+    let special_msg = r#"DB error: column "user's data" has <invalid> type & NULL"#;
+    assert_masked_500(
+        ServerError::InternalError(special_msg.to_owned()),
+        "DB error",
+    )
+    .await;
 }

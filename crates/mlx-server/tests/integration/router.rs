@@ -22,11 +22,39 @@ use std::sync::Arc;
 use tower::ServiceExt;
 
 /// Build a minimal router with just the health endpoint for testing.
-/// The health endpoint does not use engine state, so we can test it
-/// by building a router that only has that route.
 fn build_health_only_router() -> axum::Router {
     use axum::routing::get;
     axum::Router::new().route("/health", get(mlx_server::routes::health::health))
+}
+
+/// Send a request to the health-only router and return the response.
+async fn send_request(
+    method: &str,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> axum::http::Response<axum::body::Body> {
+    let app = build_health_only_router();
+    let mut builder = Request::builder().method(method).uri(uri);
+    for (key, value) in headers {
+        builder = builder.header(*key, *value);
+    }
+    app.oneshot(builder.body(axum::body::Body::empty()).unwrap())
+        .await
+        .unwrap()
+}
+
+/// Extract JSON body from a response.
+async fn response_json(response: axum::http::Response<axum::body::Body>) -> serde_json::Value {
+    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&body_bytes).unwrap()
+}
+
+fn response_content_type(response: &axum::http::Response<axum::body::Body>) -> String {
+    response
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_owned())
+        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -35,50 +63,22 @@ fn build_health_only_router() -> axum::Router {
 
 #[tokio::test]
 async fn health_returns_200_with_json() {
-    let app = build_health_only_router();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/health")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let response = send_request("GET", "/health", &[]).await;
 
     assert_eq!(response.status(), StatusCode::OK);
-
-    let content_type = response
-        .headers()
-        .get("content-type")
-        .map(|v| v.to_str().unwrap().to_owned())
-        .unwrap_or_default();
+    let ct = response_content_type(&response);
     assert!(
-        content_type.contains("application/json"),
-        "Expected JSON content type, got: {content_type}"
+        ct.contains("application/json"),
+        "Expected JSON content type, got: {ct}"
     );
 
-    let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let body: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+    let body = response_json(response).await;
     assert_eq!(body["status"], "ok");
 }
 
 #[tokio::test]
 async fn health_rejects_post() {
-    let app = build_health_only_router();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/health")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
+    let response = send_request("POST", "/health", &[]).await;
     assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
@@ -88,18 +88,7 @@ async fn health_rejects_post() {
 
 #[tokio::test]
 async fn unknown_route_returns_404() {
-    let app = build_health_only_router();
-
-    let response = app
-        .oneshot(
-            Request::builder()
-                .uri("/v1/nonexistent")
-                .body(axum::body::Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
+    let response = send_request("GET", "/v1/nonexistent", &[]).await;
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 }
 
@@ -187,4 +176,38 @@ fn build_router_is_public_and_callable() {
     // We cannot actually call it without a real AppState, but we can verify
     // the function signature exists and is accessible.
     let _: fn(Arc<AppState>, f64, Option<String>, u32) -> axum::Router = build_router;
+}
+
+// ---------------------------------------------------------------------------
+// CORS preflight
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cors_preflight_options_returns_405_without_cors_layer() {
+    let response = send_request(
+        "OPTIONS",
+        "/health",
+        &[
+            ("Origin", "http://localhost:3000"),
+            ("Access-Control-Request-Method", "GET"),
+        ],
+    )
+    .await;
+
+    // Health-only router has no CORS middleware, so OPTIONS returns 405.
+    // The full build_router adds CorsLayer::permissive().
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+}
+
+// ---------------------------------------------------------------------------
+// Health endpoint isolation from auth
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn health_endpoint_works_on_health_only_router() {
+    let response = send_request("GET", "/health", &[]).await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response_json(response).await;
+    assert_eq!(body["status"], "ok");
 }

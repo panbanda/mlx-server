@@ -10,9 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-permissions:
-  contents: read
-
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -22,6 +19,8 @@ jobs:
   test:
     name: Test
     runs-on: macos-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -44,6 +43,8 @@ jobs:
   lint:
     name: Lint
     runs-on: macos-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -67,6 +68,8 @@ jobs:
   msrv:
     name: MSRV (1.85.0)
     runs-on: macos-latest
+    permissions:
+      contents: read
 
     steps:
       - name: Checkout repository
@@ -82,3 +85,77 @@ jobs:
 
       - name: Check MSRV
         run: cargo check --all-features
+
+  coverage:
+    name: Coverage (70%)
+    runs-on: macos-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+        with:
+          toolchain: stable
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@70e00552f3196d9a4c7dde7c57ef4c4830d422dd # v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
+      - name: Generate coverage and enforce threshold
+        run: |
+          cargo llvm-cov \
+            --all-features \
+            --workspace \
+            --fail-under-lines 70 \
+            -- --test-threads=1
+
+      - name: Generate LCOV report
+        if: success() || failure()
+        run: |
+          cargo llvm-cov \
+            --all-features \
+            --workspace \
+            --lcov \
+            --output-path lcov.info \
+            -- --test-threads=1
+
+      - name: Upload LCOV report
+        if: success() || failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: coverage-lcov
+          path: lcov.info
+
+  omen:
+    name: Omen Analysis
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run Omen
+        uses: panbanda/omen@omen-v4.21.2
+        id: omen
+        with:
+          comment: true
+          label: true
+          check: true
+          check-threshold: high
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

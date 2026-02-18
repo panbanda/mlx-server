@@ -52,21 +52,41 @@ pub fn anthropic_messages_to_engine(
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::types::anthropic::ContentBlock;
+
+    fn text_message(role: &str, content: &str) -> AnthropicMessage {
+        AnthropicMessage {
+            role: role.to_owned(),
+            content: AnthropicContent::Text(content.to_owned()),
+        }
+    }
+
+    fn blocks_message(role: &str, blocks: Vec<ContentBlock>) -> AnthropicMessage {
+        AnthropicMessage {
+            role: role.to_owned(),
+            content: AnthropicContent::Blocks(blocks),
+        }
+    }
 
     #[test]
     fn test_finish_reason_mapping() {
-        assert_eq!(openai_finish_to_anthropic_stop("stop"), "end_turn");
-        assert_eq!(openai_finish_to_anthropic_stop("length"), "max_tokens");
-        assert_eq!(openai_finish_to_anthropic_stop("tool_calls"), "tool_use");
-        assert_eq!(openai_finish_to_anthropic_stop("other"), "other");
+        let cases = [
+            ("stop", "end_turn"),
+            ("length", "max_tokens"),
+            ("tool_calls", "tool_use"),
+            ("other", "other"),
+            ("", ""),
+            ("content_filter", "content_filter"),
+            ("something_new", "something_new"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(openai_finish_to_anthropic_stop(input), expected);
+        }
     }
 
     #[test]
     fn test_anthropic_messages_to_engine_with_system() {
-        let messages = vec![AnthropicMessage {
-            role: "user".to_owned(),
-            content: AnthropicContent::Text("Hello".to_owned()),
-        }];
+        let messages = vec![text_message("user", "Hello")];
 
         let result = anthropic_messages_to_engine(&messages, Some("Be helpful"));
         assert_eq!(result.len(), 2);
@@ -79,10 +99,7 @@ mod tests {
 
     #[test]
     fn test_anthropic_messages_to_engine_without_system() {
-        let messages = vec![AnthropicMessage {
-            role: "user".to_owned(),
-            content: AnthropicContent::Text("Hello".to_owned()),
-        }];
+        let messages = vec![text_message("user", "Hello")];
         let result = anthropic_messages_to_engine(&messages, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result.first().map(|m| m.role.as_str()), Some("user"));
@@ -90,19 +107,17 @@ mod tests {
 
     #[test]
     fn test_anthropic_messages_to_engine_content_blocks() {
-        use crate::types::anthropic::ContentBlock;
-
-        let messages = vec![AnthropicMessage {
-            role: "user".to_owned(),
-            content: AnthropicContent::Blocks(vec![
+        let messages = vec![blocks_message(
+            "user",
+            vec![
                 ContentBlock::Text {
                     text: "Hello ".to_owned(),
                 },
                 ContentBlock::Text {
                     text: "World".to_owned(),
                 },
-            ]),
-        }];
+            ],
+        )];
         let result = anthropic_messages_to_engine(&messages, None);
         assert_eq!(result.len(), 1);
         assert_eq!(
@@ -113,11 +128,9 @@ mod tests {
 
     #[test]
     fn test_anthropic_messages_to_engine_mixed_blocks_filters_non_text() {
-        use crate::types::anthropic::ContentBlock;
-
-        let messages = vec![AnthropicMessage {
-            role: "user".to_owned(),
-            content: AnthropicContent::Blocks(vec![
+        let messages = vec![blocks_message(
+            "user",
+            vec![
                 ContentBlock::Text {
                     text: "Hello".to_owned(),
                 },
@@ -130,8 +143,8 @@ mod tests {
                     tool_use_id: "tu_1".to_owned(),
                     content: "72 degrees".to_owned(),
                 },
-            ]),
-        }];
+            ],
+        )];
         let result = anthropic_messages_to_engine(&messages, None);
         assert_eq!(result.len(), 1);
         assert_eq!(result.first().map(|m| m.content.as_str()), Some("Hello"));
@@ -146,23 +159,70 @@ mod tests {
     #[test]
     fn test_anthropic_messages_to_engine_multiple_messages() {
         let messages = vec![
-            AnthropicMessage {
-                role: "user".to_owned(),
-                content: AnthropicContent::Text("First".to_owned()),
-            },
-            AnthropicMessage {
-                role: "assistant".to_owned(),
-                content: AnthropicContent::Text("Second".to_owned()),
-            },
-            AnthropicMessage {
-                role: "user".to_owned(),
-                content: AnthropicContent::Text("Third".to_owned()),
-            },
+            text_message("user", "First"),
+            text_message("assistant", "Second"),
+            text_message("user", "Third"),
         ];
         let result = anthropic_messages_to_engine(&messages, None);
         assert_eq!(result.len(), 3);
         assert_eq!(result.first().map(|m| m.content.as_str()), Some("First"));
         assert_eq!(result.get(1).map(|m| m.content.as_str()), Some("Second"));
         assert_eq!(result.get(2).map(|m| m.content.as_str()), Some("Third"));
+    }
+
+    #[test]
+    fn test_system_as_empty_string() {
+        let messages = vec![text_message("user", "Hello")];
+
+        let result = anthropic_messages_to_engine(&messages, Some(""));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.first().map(|m| m.role.as_str()), Some("system"));
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_only_non_text_content_blocks_results_in_empty_content() {
+        let messages = vec![blocks_message(
+            "assistant",
+            vec![
+                ContentBlock::ToolUse {
+                    id: "tu_1".to_owned(),
+                    name: "get_weather".to_owned(),
+                    input: serde_json::json!({"city": "NYC"}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".to_owned(),
+                    content: "72 degrees".to_owned(),
+                },
+            ],
+        )];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let messages = vec![text_message(
+            "user",
+            "Hej! Jag talar svenska. \u{1F600} \u{4F60}\u{597D}",
+        )];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result
+                .first()
+                .map(|m| m.content.contains("svenska"))
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn test_very_long_content() {
+        let long_content = "a".repeat(100_000);
+        let messages = vec![text_message("user", &long_content)];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.content.len()), Some(100_000));
     }
 }
