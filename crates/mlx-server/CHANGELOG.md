@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.4...mlx-server-v0.1.5) (2026-02-18)
+
+
+### Features
+
+* serve multiple models via repeated --model flags ([#7](https://github.com/panbanda/mlx-server/issues/7)) ([cc972c3](https://github.com/panbanda/mlx-server/commit/cc972c39c8af961103884e9dc08f835f3822b091))
+
 ## [0.1.4](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.3...mlx-server-v0.1.4) (2026-02-18)
 
 
