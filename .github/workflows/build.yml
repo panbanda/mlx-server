@@ -5,13 +5,19 @@ name: Build and Publish
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release tag (e.g. mlx-server-v0.1.2)'
+        required: true
+        type: string
 
 permissions: read-all
 
 jobs:
   build:
     name: Build (${{ matrix.target }})
-    if: startsWith(github.event.release.tag_name, 'mlx-server-v')
+    if: startsWith(github.event.release.tag_name || inputs.tag_name, 'mlx-server-v')
 
     strategy:
       fail-fast: false
@@ -29,7 +35,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
@@ -44,7 +50,7 @@ jobs:
 
       - name: Create archive
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag_name }}"
           VERSION="${TAG#mlx-server-v}"
           ARCHIVE_NAME="mlx-server_${VERSION}_${{ matrix.target }}"
 
@@ -58,12 +64,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag_name }}"
           gh release upload "$TAG" dist/*.tar.gz dist/*.sha256 --clobber
 
   publish:
     name: Publish to crates.io
-    if: startsWith(github.event.release.tag_name, 'mlx-server-v')
+    if: startsWith(github.event.release.tag_name || inputs.tag_name, 'mlx-server-v')
     runs-on: macos-latest
 
     permissions:
@@ -73,7 +79,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag_name }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
@@ -101,7 +107,7 @@ jobs:
   homebrew:
     name: Update Homebrew Formula
     needs: build
-    if: startsWith(github.event.release.tag_name, 'mlx-server-v')
+    if: startsWith(github.event.release.tag_name || inputs.tag_name, 'mlx-server-v')
     runs-on: ubuntu-latest
 
     permissions:
@@ -111,14 +117,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event.release.tag_name || inputs.tag_name }}
 
       - name: Download release artifacts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p dist
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag_name }}"
           gh release download "$TAG" --pattern "*.tar.gz" --dir dist
           gh release download "$TAG" --pattern "*.sha256" --dir dist
 
@@ -126,7 +132,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag_name }}"
           cat dist/*.sha256 | sort > dist/checksums.txt
           gh release upload "$TAG" dist/checksums.txt --clobber
 
@@ -134,7 +140,7 @@ jobs:
         env:
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
         run: |
-          TAG="${{ github.event.release.tag_name }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag_name }}"
           VERSION="${TAG#mlx-server-v}"
 
           DARWIN_ARM64_SHA=$(cat dist/mlx-server_${VERSION}_aarch64-apple-darwin.tar.gz.sha256 | cut -d' ' -f1)
