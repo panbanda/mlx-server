@@ -450,6 +450,11 @@ struct SparseMoeBlock {
 
 impl SparseMoeBlock {
     fn new(args: &Qwen3NextModelArgs, ql: i32, qb: i32) -> Result<Self, Exception> {
+        if args.num_experts_per_tok > args.num_experts {
+            return Err(Exception::custom(
+                "num_experts_per_tok must be <= num_experts",
+            ));
+        }
         // Router gate and shared_expert_gate use 8-bit quantization
         Ok(Self {
             gate: QLinear::new(64, 8)?,
@@ -665,10 +670,10 @@ impl GatedDeltaNet {
         let (q, k, v, z, b, a) = self.fix_query_key_value_ordering(&mixed_qkvz, &mixed_ba, B, S)?;
 
         // Conv1d with state management
-        let conv_state = cache.conv_state.take().unwrap_or_else(|| {
-            Array::zeros::<f32>(&[B, self.conv_kernel_size - 1, self.conv_dim])
-                .unwrap_or_else(|_| Array::from_slice(&[0.0_f32], &[1]))
-        });
+        let conv_state = match cache.conv_state.take() {
+            Some(state) => state,
+            None => Array::zeros::<f32>(&[B, self.conv_kernel_size - 1, self.conv_dim])?,
+        };
 
         // Concatenate q, k, v for conv input
         let q_flat = q.reshape(&[B, S, -1])?;
@@ -729,10 +734,12 @@ impl GatedDeltaNet {
         let beta = nn::sigmoid(&b)?;
 
         // Get or initialize SSM state: [B, Hv, Dv, Dk]
-        let mut state = cache.ssm_state.take().unwrap_or_else(|| {
-            Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])
-                .unwrap_or_else(|_| Array::from_slice(&[0.0_f32], &[1]))
-        });
+        let mut state = match cache.ssm_state.take() {
+            Some(state) => state,
+            None => {
+                Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])?
+            }
+        };
 
         // Repeat q, k for value head groups if needed
         let repeat_factor = self.num_v_heads / self.num_k_heads;
@@ -1222,12 +1229,60 @@ mod tests {
         let k = Array::ones::<f32>(&[1, 2, 4]).unwrap();
         let v = Array::ones::<f32>(&[1, 2, 3]).unwrap();
         let g = Array::ones::<f32>(&[1, 2]).unwrap();
-        let beta = ops::broadcast_to(&Array::from_f32(0.5), &[1, 2]).unwrap();
+        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 2]).unwrap();
         let state = Array::zeros::<f32>(&[1, 2, 3, 4]).unwrap();
 
         let (y, new_state) = gated_delta_step(&q, &k, &v, &g, &beta, &state).unwrap();
         assert_eq!(y.shape(), &[1, 2, 3]);
         assert_eq!(new_state.shape(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_sparse_moe_rejects_top_k_exceeding_num_experts() {
+        let mut args = minimal_qwen3_next_args();
+        args.num_experts = 4;
+        args.num_experts_per_tok = 8; // top_k > num_experts
+        let result = SparseMoeBlock::new(&args, 64, 4);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("num_experts_per_tok"),
+            "Expected error about num_experts_per_tok, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_moe_accepts_top_k_equal_to_num_experts() {
+        let mut args = minimal_qwen3_next_args();
+        args.num_experts = 4;
+        args.num_experts_per_tok = 4; // top_k == num_experts is fine
+        let result = SparseMoeBlock::new(&args, 64, 4);
+        assert!(result.is_ok());
+    }
+
+    /// Minimal args for tests that only care about MoE fields.
+    fn minimal_qwen3_next_args() -> Qwen3NextModelArgs {
+        serde_json::from_str(
+            r#"{
+                "model_type": "qwen3_next",
+                "hidden_size": 256,
+                "num_hidden_layers": 2,
+                "intermediate_size": 512,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "head_dim": 64,
+                "rms_norm_eps": 1e-06,
+                "vocab_size": 1024,
+                "max_position_embeddings": 512,
+                "num_experts": 4,
+                "num_experts_per_tok": 2,
+                "decoder_sparse_step": 1,
+                "shared_expert_intermediate_size": 256,
+                "moe_intermediate_size": 128,
+                "norm_topk_prob": true
+            }"#,
+        )
+        .unwrap()
     }
 
     #[test]
