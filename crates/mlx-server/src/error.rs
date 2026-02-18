@@ -11,6 +11,7 @@ pub struct ErrorResponse {
     pub error: ErrorDetail,
 }
 
+/// Individual error detail within an [`ErrorResponse`].
 #[derive(Debug, Serialize)]
 pub struct ErrorDetail {
     pub message: String,
