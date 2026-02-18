@@ -6,7 +6,9 @@ use crate::config::ServerConfig;
 
 /// Shared application state available to all route handlers.
 pub struct AppState {
+    /// The inference engine used to run model generation.
     pub engine: SimpleEngine,
+    /// Server configuration (host, port, model path, etc.).
     pub config: ServerConfig,
 }
 
