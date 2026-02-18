@@ -91,7 +91,7 @@ jobs:
     name: Publish to crates.io
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     permissions:
       contents: read
@@ -107,22 +107,23 @@ jobs:
         with:
           toolchain: stable
 
-      # --no-verify skips local compilation, required because mlx-rs links
-      # Apple Metal frameworks that are unavailable on Linux runners.
+      - name: Cache cargo registry and build
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+
       - name: Publish mlx-models
-        run: cargo publish -p mlx-models --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p mlx-models --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Wait for crates.io to index mlx-models
         run: sleep 30
 
       - name: Publish mlx-engine
-        run: cargo publish -p mlx-engine --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p mlx-engine --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
       - name: Wait for crates.io to index mlx-engine
         run: sleep 30
 
       - name: Publish mlx-server
-        run: cargo publish -p mlx-server --no-verify --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish -p mlx-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   homebrew:
     name: Update Homebrew Formula
