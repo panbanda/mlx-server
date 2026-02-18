@@ -736,9 +736,7 @@ impl GatedDeltaNet {
         // Get or initialize SSM state: [B, Hv, Dv, Dk]
         let mut state = match cache.ssm_state.take() {
             Some(state) => state,
-            None => {
-                Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])?
-            }
+            None => Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])?,
         };
 
         // Repeat q, k for value head groups if needed
