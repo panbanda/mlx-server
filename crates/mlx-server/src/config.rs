@@ -116,6 +116,21 @@ impl ServerConfig {
                 "at least one --model is required".to_owned(),
             )));
         }
+        for model in &self.models {
+            if model.trim().is_empty() {
+                return Err(Box::new(figment::Error::from(
+                    "model path must not be empty or whitespace-only".to_owned(),
+                )));
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        for model in &self.models {
+            if !seen.insert(model) {
+                return Err(Box::new(figment::Error::from(format!(
+                    "duplicate model path: {model}"
+                ))));
+            }
+        }
         if self.timeout < 0.0 {
             return Err(Box::new(figment::Error::from(
                 "timeout must not be negative".to_owned(),
@@ -263,5 +278,34 @@ mod tests {
     fn test_default_rate_limit_is_zero() {
         let config = ServerConfig::default();
         assert_eq!(config.rate_limit, 0);
+    }
+
+    #[test]
+    fn test_empty_string_model_rejected() {
+        let config = config_with("models", vec![""]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_whitespace_only_model_rejected() {
+        let config = config_with("models", vec!["  "]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_duplicate_models_rejected() {
+        let config = config_with("models", vec!["org/model", "org/model"]);
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_duplicate_models_different_paths_same_name_rejected() {
+        // org-a/llama and org-b/llama both resolve to "llama" in the HashMap key
+        let config = config_with("models", vec!["org-a/llama", "org-b/llama"]);
+        // These are different strings, so path-level dedup doesn't catch this --
+        // but the name collision is detected at load time in main.rs, not here.
+        // This test documents that path-level dedup in validate() only catches
+        // exact string duplicates.
+        assert!(config.validate().is_ok());
     }
 }

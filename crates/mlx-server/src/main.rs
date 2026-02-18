@@ -23,7 +23,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let engine = SimpleEngine::load(model_path)?;
         let name = engine.model_name().to_owned();
         tracing::info!(model_name = %name, "Model loaded");
-        engines.insert(name, Arc::new(engine));
+        if engines.insert(name.clone(), Arc::new(engine)).is_some() {
+            return Err(format!(
+                "model name collision: two model paths resolve to the same name '{name}'"
+            )
+            .into());
+        }
     }
 
     let timeout_secs = config.timeout;
