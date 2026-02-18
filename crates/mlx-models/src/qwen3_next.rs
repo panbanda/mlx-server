@@ -1020,6 +1020,16 @@ pub struct Qwen3NextCausalLM {
 
 impl Qwen3NextCausalLM {
     pub fn new(args: Qwen3NextModelArgs) -> Result<Self, Exception> {
+        if args.full_attention_interval <= 0 {
+            return Err(Exception::custom("full_attention_interval must be > 0"));
+        }
+        if args.linear_num_key_heads <= 0 || args.linear_num_value_heads <= 0 {
+            return Err(Exception::custom("linear_num_*_heads must be > 0"));
+        }
+        if args.linear_conv_kernel_dim <= 0 {
+            return Err(Exception::custom("linear_conv_kernel_dim must be > 0"));
+        }
+
         let ql = args.quantization.as_ref().map_or(64, |q| q.group_size);
         let qb = args.quantization.as_ref().map_or(4, |q| q.bits);
 
@@ -1281,6 +1291,72 @@ mod tests {
             }"#,
         )
         .unwrap()
+    }
+
+    /// Full args suitable for Qwen3NextCausalLM::new() validation tests.
+    fn valid_causal_lm_args() -> Qwen3NextModelArgs {
+        serde_json::from_str(
+            r#"{
+                "model_type": "qwen3_next",
+                "hidden_size": 256,
+                "num_hidden_layers": 4,
+                "intermediate_size": 512,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "head_dim": 64,
+                "rms_norm_eps": 1e-06,
+                "vocab_size": 1024,
+                "max_position_embeddings": 512,
+                "full_attention_interval": 4,
+                "linear_num_key_heads": 2,
+                "linear_num_value_heads": 4,
+                "linear_key_head_dim": 32,
+                "linear_value_head_dim": 16,
+                "linear_conv_kernel_dim": 4,
+                "num_experts": 4,
+                "num_experts_per_tok": 2,
+                "decoder_sparse_step": 1,
+                "shared_expert_intermediate_size": 256,
+                "moe_intermediate_size": 128,
+                "norm_topk_prob": true
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_causal_lm_rejects_zero_full_attention_interval() {
+        let mut args = valid_causal_lm_args();
+        args.full_attention_interval = 0;
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(
+            result.is_err(),
+            "Should reject full_attention_interval == 0"
+        );
+    }
+
+    #[test]
+    fn test_causal_lm_rejects_zero_linear_key_heads() {
+        let mut args = valid_causal_lm_args();
+        args.linear_num_key_heads = 0;
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_err(), "Should reject linear_num_key_heads == 0");
+    }
+
+    #[test]
+    fn test_causal_lm_rejects_zero_linear_value_heads() {
+        let mut args = valid_causal_lm_args();
+        args.linear_num_value_heads = 0;
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_err(), "Should reject linear_num_value_heads == 0");
+    }
+
+    #[test]
+    fn test_causal_lm_rejects_zero_conv_kernel_dim() {
+        let mut args = valid_causal_lm_args();
+        args.linear_conv_kernel_dim = 0;
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_err(), "Should reject linear_conv_kernel_dim == 0");
     }
 
     #[test]
