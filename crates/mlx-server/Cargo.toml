@@ -1,0 +1,34 @@
+[package]
+name = "mlx-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+mlx-engine.workspace = true
+mlx-models.workspace = true
+axum.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tower-http.workspace = true
+governor.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+figment.workspace = true
+directories.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-stream.workspace = true
+
+[dev-dependencies]
+http-body-util = "0.1"
+tokio = { version = "1", features = ["macros", "rt"] }
+tower = { version = "0.5", features = ["util"] }
+hyper = "1"

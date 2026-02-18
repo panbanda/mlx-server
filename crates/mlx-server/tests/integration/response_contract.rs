@@ -1,0 +1,477 @@
+//! Tests for response serialization contracts.
+//!
+//! Verifies that response types serialize to JSON matching the OpenAI and
+//! Anthropic API specifications (correct field names, types, and structure).
+
+#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+
+use mlx_server::types::anthropic::{
+    AnthropicUsage, ContentBlockDeltaEvent, ContentBlockResponse, ContentBlockStartEvent,
+    ContentBlockStartPayload, ContentBlockStopEvent, CountTokensResponse, CreateMessageResponse,
+    MessageDelta, MessageDeltaEvent, MessageStartEvent, MessageStartPayload, MessageStopEvent,
+    TextDelta,
+};
+use mlx_server::types::openai::{
+    ChatCompletionChoice, ChatCompletionChunk, ChatCompletionChunkChoice, ChatCompletionDelta,
+    ChatCompletionMessage, ChatCompletionResponse, CompletionChoice, CompletionChunk,
+    CompletionChunkChoice, CompletionResponse, CompletionUsage, EmbeddingObject, EmbeddingResponse,
+    EmbeddingUsage, ModelList, ModelObject, ToolCall, ToolCallFunction,
+};
+
+// ---------------------------------------------------------------------------
+// OpenAI Chat Completion response
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_completion_response_has_required_fields() {
+    let resp = ChatCompletionResponse {
+        id: "chatcmpl-abc123".to_owned(),
+        object: "chat.completion",
+        created: 1700000000,
+        model: "test-model".to_owned(),
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionMessage {
+                role: "assistant".to_owned(),
+                content: Some("Hello!".to_owned()),
+                tool_calls: None,
+                tool_call_id: None,
+            },
+            finish_reason: "stop".to_owned(),
+        }],
+        usage: CompletionUsage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: 15,
+        },
+    };
+
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    assert_eq!(json["id"], "chatcmpl-abc123");
+    assert_eq!(json["object"], "chat.completion");
+    assert_eq!(json["created"], 1700000000);
+    assert_eq!(json["model"], "test-model");
+    assert_eq!(json["choices"][0]["index"], 0);
+    assert_eq!(json["choices"][0]["message"]["role"], "assistant");
+    assert_eq!(json["choices"][0]["message"]["content"], "Hello!");
+    assert_eq!(json["choices"][0]["finish_reason"], "stop");
+    assert_eq!(json["usage"]["prompt_tokens"], 10);
+    assert_eq!(json["usage"]["completion_tokens"], 5);
+    assert_eq!(json["usage"]["total_tokens"], 15);
+}
+
+#[test]
+fn chat_completion_response_omits_null_optional_fields() {
+    let msg = ChatCompletionMessage {
+        role: "assistant".to_owned(),
+        content: Some("hi".to_owned()),
+        tool_calls: None,
+        tool_call_id: None,
+    };
+    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+
+    // tool_calls and tool_call_id should be omitted (skip_serializing_if)
+    assert!(json.get("tool_calls").is_none());
+    assert!(json.get("tool_call_id").is_none());
+}
+
+#[test]
+fn chat_completion_response_includes_tool_calls() {
+    let msg = ChatCompletionMessage {
+        role: "assistant".to_owned(),
+        content: None,
+        tool_calls: Some(vec![ToolCall {
+            id: "call_001".to_owned(),
+            r#type: "function".to_owned(),
+            function: ToolCallFunction {
+                name: "get_weather".to_owned(),
+                arguments: r#"{"city":"London"}"#.to_owned(),
+            },
+        }]),
+        tool_call_id: None,
+    };
+    let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
+
+    // content should be omitted when None
+    assert!(json.get("content").is_none());
+    assert_eq!(json["tool_calls"][0]["id"], "call_001");
+    assert_eq!(json["tool_calls"][0]["type"], "function");
+    assert_eq!(json["tool_calls"][0]["function"]["name"], "get_weather");
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Chat streaming chunk
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_chunk_has_correct_object_type() {
+    let chunk = ChatCompletionChunk {
+        id: "chatcmpl-abc".to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: Some("assistant".to_owned()),
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
+
+    assert_eq!(json["object"], "chat.completion.chunk");
+    assert_eq!(json["choices"][0]["delta"]["role"], "assistant");
+    assert!(json["choices"][0]["finish_reason"].is_null());
+}
+
+#[test]
+fn chat_chunk_content_delta() {
+    let chunk = ChatCompletionChunk {
+        id: "chatcmpl-abc".to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: None,
+                content: Some("Hello".to_owned()),
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
+
+    assert_eq!(json["choices"][0]["delta"]["content"], "Hello");
+    // role should be omitted
+    assert!(json["choices"][0]["delta"].get("role").is_none());
+}
+
+#[test]
+fn chat_chunk_finish_reason() {
+    let chunk = ChatCompletionChunk {
+        id: "chatcmpl-abc".to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: None,
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: Some("stop".to_owned()),
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
+    assert_eq!(json["choices"][0]["finish_reason"], "stop");
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Completions response
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completion_response_has_required_fields() {
+    let resp = CompletionResponse {
+        id: "cmpl-abc".to_owned(),
+        object: "text_completion",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![CompletionChoice {
+            index: 0,
+            text: "once upon a time".to_owned(),
+            finish_reason: "stop".to_owned(),
+        }],
+        usage: CompletionUsage {
+            prompt_tokens: 3,
+            completion_tokens: 4,
+            total_tokens: 7,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    assert_eq!(json["object"], "text_completion");
+    assert_eq!(json["choices"][0]["text"], "once upon a time");
+    assert_eq!(json["choices"][0]["finish_reason"], "stop");
+    assert_eq!(json["usage"]["total_tokens"], 7);
+}
+
+#[test]
+fn completion_chunk_has_correct_object_type() {
+    let chunk = CompletionChunk {
+        id: "cmpl-abc".to_owned(),
+        object: "text_completion",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![CompletionChunkChoice {
+            index: 0,
+            text: "token".to_owned(),
+            finish_reason: None,
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
+
+    assert_eq!(json["object"], "text_completion");
+    assert_eq!(json["choices"][0]["text"], "token");
+    assert!(json["choices"][0]["finish_reason"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Models response
+// ---------------------------------------------------------------------------
+
+#[test]
+fn model_list_serialization() {
+    let list = ModelList {
+        object: "list",
+        data: vec![ModelObject {
+            id: "my-model".to_owned(),
+            object: "model",
+            created: 1700000000,
+            owned_by: "local".to_owned(),
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&list).unwrap();
+
+    assert_eq!(json["object"], "list");
+    assert_eq!(json["data"][0]["id"], "my-model");
+    assert_eq!(json["data"][0]["object"], "model");
+    assert_eq!(json["data"][0]["owned_by"], "local");
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Embeddings response
+// ---------------------------------------------------------------------------
+
+#[test]
+fn embedding_response_serialization() {
+    let resp = EmbeddingResponse {
+        object: "list",
+        data: vec![EmbeddingObject {
+            object: "embedding",
+            embedding: vec![0.1, 0.2, 0.3],
+            index: 0,
+        }],
+        model: "embed-model".to_owned(),
+        usage: EmbeddingUsage {
+            prompt_tokens: 5,
+            total_tokens: 5,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    assert_eq!(json["object"], "list");
+    assert_eq!(json["data"][0]["object"], "embedding");
+    assert_eq!(json["data"][0]["index"], 0);
+    assert_eq!(json["model"], "embed-model");
+    assert_eq!(json["usage"]["prompt_tokens"], 5);
+    let emb = json["data"][0]["embedding"].as_array().unwrap();
+    assert_eq!(emb.len(), 3);
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic Messages response
+// ---------------------------------------------------------------------------
+
+#[test]
+fn anthropic_response_has_type_field() {
+    let resp = CreateMessageResponse {
+        id: "msg_abc123".to_owned(),
+        message_type: "message",
+        role: "assistant",
+        content: vec![ContentBlockResponse {
+            block_type: "text",
+            text: "Hello!".to_owned(),
+        }],
+        model: "claude-3".to_owned(),
+        stop_reason: Some("end_turn".to_owned()),
+        usage: AnthropicUsage {
+            input_tokens: 10,
+            output_tokens: 5,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    // Anthropic uses "type" instead of "object"
+    assert_eq!(json["type"], "message");
+    assert_eq!(json["role"], "assistant");
+    assert_eq!(json["content"][0]["type"], "text");
+    assert_eq!(json["content"][0]["text"], "Hello!");
+    assert_eq!(json["stop_reason"], "end_turn");
+    assert_eq!(json["usage"]["input_tokens"], 10);
+    assert_eq!(json["usage"]["output_tokens"], 5);
+}
+
+#[test]
+fn anthropic_count_tokens_response() {
+    let resp = CountTokensResponse { input_tokens: 42 };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+    assert_eq!(json["input_tokens"], 42);
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic streaming event types
+// ---------------------------------------------------------------------------
+
+#[test]
+fn anthropic_message_start_event() {
+    let event = MessageStartEvent {
+        event_type: "message_start",
+        message: MessageStartPayload {
+            id: "msg_001".to_owned(),
+            message_type: "message",
+            role: "assistant",
+            content: vec![],
+            model: "claude-3".to_owned(),
+            stop_reason: None,
+            usage: AnthropicUsage {
+                input_tokens: 10,
+                output_tokens: 0,
+            },
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "message_start");
+    assert_eq!(json["message"]["type"], "message");
+    assert_eq!(json["message"]["role"], "assistant");
+    assert!(json["message"]["content"].as_array().unwrap().is_empty());
+    assert!(json["message"]["stop_reason"].is_null());
+}
+
+#[test]
+fn anthropic_content_block_start_event() {
+    let event = ContentBlockStartEvent {
+        event_type: "content_block_start",
+        index: 0,
+        content_block: ContentBlockStartPayload {
+            block_type: "text",
+            text: String::new(),
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "content_block_start");
+    assert_eq!(json["index"], 0);
+    assert_eq!(json["content_block"]["type"], "text");
+    assert_eq!(json["content_block"]["text"], "");
+}
+
+#[test]
+fn anthropic_content_block_delta_event() {
+    let event = ContentBlockDeltaEvent {
+        event_type: "content_block_delta",
+        index: 0,
+        delta: TextDelta {
+            delta_type: "text_delta",
+            text: "Hello".to_owned(),
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "content_block_delta");
+    assert_eq!(json["delta"]["type"], "text_delta");
+    assert_eq!(json["delta"]["text"], "Hello");
+}
+
+#[test]
+fn anthropic_content_block_stop_event() {
+    let event = ContentBlockStopEvent {
+        event_type: "content_block_stop",
+        index: 0,
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "content_block_stop");
+    assert_eq!(json["index"], 0);
+}
+
+#[test]
+fn anthropic_message_delta_event() {
+    let event = MessageDeltaEvent {
+        event_type: "message_delta",
+        delta: MessageDelta {
+            stop_reason: Some("end_turn".to_owned()),
+        },
+        usage: AnthropicUsage {
+            input_tokens: 10,
+            output_tokens: 25,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+
+    assert_eq!(json["type"], "message_delta");
+    assert_eq!(json["delta"]["stop_reason"], "end_turn");
+    assert_eq!(json["usage"]["output_tokens"], 25);
+}
+
+#[test]
+fn anthropic_message_stop_event() {
+    let event = MessageStopEvent {
+        event_type: "message_stop",
+    };
+    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+    assert_eq!(json["type"], "message_stop");
+}
+
+// ---------------------------------------------------------------------------
+// SSE data format
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_chunk_serializes_as_valid_sse_data() {
+    let chunk = ChatCompletionChunk {
+        id: "chatcmpl-test".to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: None,
+                content: Some("word".to_owned()),
+                tool_calls: None,
+            },
+            finish_reason: None,
+        }],
+    };
+
+    let json_str = serde_json::to_string(&chunk).unwrap();
+    // Verify it's valid JSON (can be parsed back)
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(parsed["choices"][0]["delta"]["content"], "word");
+
+    // Verify no newlines in the JSON (SSE data lines must not contain bare newlines)
+    assert!(
+        !json_str.contains('\n'),
+        "SSE data must not contain raw newlines"
+    );
+}
+
+#[test]
+fn completion_chunk_serializes_as_valid_sse_data() {
+    let chunk = CompletionChunk {
+        id: "cmpl-test".to_owned(),
+        object: "text_completion",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![CompletionChunkChoice {
+            index: 0,
+            text: "token".to_owned(),
+            finish_reason: None,
+        }],
+    };
+
+    let json_str = serde_json::to_string(&chunk).unwrap();
+    assert!(!json_str.contains('\n'));
+
+    let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(parsed["choices"][0]["text"], "token");
+}

@@ -1,0 +1,74 @@
+[workspace]
+members = ["crates/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.85.0"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+non_ascii_idents = "forbid"
+
+[workspace.lints.clippy]
+# MSRV compat: these suggest features stabilized after 1.85.0
+collapsible_if = "allow"
+manual_is_multiple_of = "allow"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+as_conversions = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+shadow_reuse = "deny"
+shadow_same = "deny"
+shadow_unrelated = "deny"
+
+[workspace.dependencies]
+# Local crates
+mlx-engine = { path = "crates/mlx-engine" }
+mlx-models = { path = "crates/mlx-models" }
+
+# MLX
+mlx-rs = "0.25.3"
+
+# HTTP
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+tower-http = { version = "0.6", features = ["cors", "trace", "timeout", "request-id", "auth"] }
+governor = "0.8"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Tokenization + Templates
+tokenizers = { version = "0.22", features = ["http"] }
+minijinja = { version = "2", features = ["loader"] }
+
+# CLI + Configuration
+clap = { version = "4", features = ["derive"] }
+figment = { version = "0.10", features = ["env"] }
+directories = "6"
+
+# Observability
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+
+# Async streaming
+async-stream = "0.3"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
