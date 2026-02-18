@@ -166,4 +166,73 @@ mod tests {
         assert_eq!(message, "Internal server error");
         assert!(!message.contains("template parse failed"));
     }
+
+    #[tokio::test]
+    async fn test_bad_request_with_empty_message() {
+        let error = ServerError::BadRequest(String::new());
+        let resp = error.into_response();
+        let (status, body) = response_status_and_body(resp).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["message"].as_str().unwrap(), "");
+        assert_eq!(
+            body["error"]["type"].as_str().unwrap(),
+            "invalid_request_error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_bad_request_with_very_long_message() {
+        let long_msg = "x".repeat(2000);
+        let error = ServerError::BadRequest(long_msg.clone());
+        let resp = error.into_response();
+        let (status, body) = response_status_and_body(resp).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = body["error"]["message"].as_str().unwrap();
+        assert_eq!(message, long_msg);
+        assert_eq!(message.len(), 2000);
+    }
+
+    #[tokio::test]
+    async fn test_internal_error_with_empty_message_still_masked() {
+        let error = ServerError::InternalError(String::new());
+        let resp = error.into_response();
+        let (status, body) = response_status_and_body(resp).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            body["error"]["message"].as_str().unwrap(),
+            "Internal server error"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_error_response_json_structure() {
+        let error = ServerError::BadRequest("test".to_owned());
+        let resp = error.into_response();
+        let (_, body) = response_status_and_body(resp).await;
+
+        assert!(body.get("error").is_some());
+        let error_obj = body.get("error").unwrap();
+        assert!(error_obj.get("message").is_some());
+        assert!(error_obj.get("type").is_some());
+        assert!(error_obj.get("code").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_error_response_content_type_is_json() {
+        let error = ServerError::BadRequest("test".to_owned());
+        let resp = error.into_response();
+
+        let content_type = resp
+            .headers()
+            .get("content-type")
+            .map(|v| v.to_str().unwrap().to_owned())
+            .unwrap_or_default();
+        assert!(
+            content_type.contains("application/json"),
+            "Expected application/json, got: {content_type}"
+        );
+    }
 }

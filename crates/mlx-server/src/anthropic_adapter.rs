@@ -165,4 +165,102 @@ mod tests {
         assert_eq!(result.get(1).map(|m| m.content.as_str()), Some("Second"));
         assert_eq!(result.get(2).map(|m| m.content.as_str()), Some("Third"));
     }
+
+    #[test]
+    fn test_finish_reason_empty_string() {
+        assert_eq!(openai_finish_to_anthropic_stop(""), "");
+    }
+
+    #[test]
+    fn test_finish_reason_stop_maps_to_end_turn() {
+        assert_eq!(openai_finish_to_anthropic_stop("stop"), "end_turn");
+    }
+
+    #[test]
+    fn test_finish_reason_length_maps_to_max_tokens() {
+        assert_eq!(openai_finish_to_anthropic_stop("length"), "max_tokens");
+    }
+
+    #[test]
+    fn test_finish_reason_tool_calls_maps_to_tool_use() {
+        assert_eq!(openai_finish_to_anthropic_stop("tool_calls"), "tool_use");
+    }
+
+    #[test]
+    fn test_finish_reason_unknown_passes_through() {
+        assert_eq!(
+            openai_finish_to_anthropic_stop("content_filter"),
+            "content_filter"
+        );
+        assert_eq!(
+            openai_finish_to_anthropic_stop("something_new"),
+            "something_new"
+        );
+    }
+
+    #[test]
+    fn test_system_as_empty_string() {
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Text("Hello".to_owned()),
+        }];
+
+        let result = anthropic_messages_to_engine(&messages, Some(""));
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.first().map(|m| m.role.as_str()), Some("system"));
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_only_non_text_content_blocks_results_in_empty_content() {
+        use crate::types::anthropic::ContentBlock;
+
+        let messages = vec![AnthropicMessage {
+            role: "assistant".to_owned(),
+            content: AnthropicContent::Blocks(vec![
+                ContentBlock::ToolUse {
+                    id: "tu_1".to_owned(),
+                    name: "get_weather".to_owned(),
+                    input: serde_json::json!({"city": "NYC"}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".to_owned(),
+                    content: "72 degrees".to_owned(),
+                },
+            ]),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Text(
+                "Hej! Jag talar svenska. \u{1F600} \u{4F60}\u{597D}".to_owned(),
+            ),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert!(
+            result
+                .first()
+                .map(|m| m.content.contains("svenska"))
+                .unwrap_or(false)
+        );
+    }
+
+    #[test]
+    fn test_very_long_content() {
+        let long_content = "a".repeat(100_000);
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Text(long_content.clone()),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.content.len()), Some(100_000));
+    }
 }

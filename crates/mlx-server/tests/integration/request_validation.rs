@@ -443,3 +443,60 @@ fn anthropic_messages_to_engine_ignores_tool_blocks() {
     let result = anthropic_messages_to_engine(&messages, None);
     assert_eq!(result[0].content, "thinking...");
 }
+
+// ---------------------------------------------------------------------------
+// Extra unknown fields
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_request_with_extra_unknown_fields_accepted() {
+    let json = r#"{
+        "model": "m",
+        "messages": [{"role": "user", "content": "hi"}],
+        "extra_field": 42,
+        "another_unknown": {"nested": true},
+        "vendor_specific_param": "value"
+    }"#;
+    let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+    assert_eq!(req.model, "m");
+    assert_eq!(req.messages.len(), 1);
+}
+
+#[test]
+fn anthropic_request_with_tools_array() {
+    let json = r#"{
+        "model": "m",
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 100,
+        "tools": [
+            {
+                "name": "get_weather",
+                "description": "Gets current weather for a location",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "city": {"type": "string"}
+                    },
+                    "required": ["city"]
+                }
+            }
+        ]
+    }"#;
+    let req: CreateMessageRequest = serde_json::from_str(json).unwrap();
+    let tools = req.tools.unwrap();
+    assert_eq!(tools.len(), 1);
+}
+
+#[test]
+fn completion_request_with_stop_as_array() {
+    let json = r#"{
+        "model": "m",
+        "prompt": "Once upon",
+        "stop": ["\n\n", "END", "---"]
+    }"#;
+    let req: CompletionRequest = serde_json::from_str(json).unwrap();
+    match req.stop.unwrap() {
+        StopSequence::Multiple(v) => assert_eq!(v.len(), 3),
+        StopSequence::Single(_) => panic!("expected Multiple variant"),
+    }
+}

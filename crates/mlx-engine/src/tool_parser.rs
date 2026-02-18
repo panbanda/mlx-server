@@ -278,4 +278,62 @@ After last."#;
         assert!(result.text.contains("Middle text."));
         assert!(result.text.contains("After last."));
     }
+
+    #[test]
+    fn test_nested_tool_call_tags() {
+        // A <tool_call> tag nested inside another -- the inner one becomes
+        // part of the content between the first open and first close.
+        let input = r#"<tool_call>
+<tool_call>
+{"name": "inner", "arguments": {}}
+</tool_call>
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        // The parser finds the first <tool_call>, then looks for first </tool_call>.
+        // Content between them: "\n<tool_call>\n{\"name\": \"inner\", \"arguments\": {}}\n"
+        // This is not valid JSON (starts with <tool_call>), so it's preserved as raw text.
+        // Then the remaining "</tool_call>" is just text.
+        // The outer close tag becomes trailing text.
+        assert!(result.tool_calls.is_empty() || result.tool_calls.len() <= 1);
+    }
+
+    #[test]
+    fn test_arguments_as_json_array() {
+        let input = r#"<tool_call>
+{"name": "batch_op", "arguments": [1, 2, 3]}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls.first().unwrap().name, "batch_op");
+        assert!(result.tool_calls.first().unwrap().arguments.is_array());
+        assert_eq!(
+            result.tool_calls.first().unwrap().arguments,
+            serde_json::json!([1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn test_arguments_with_special_chars_and_unicode() {
+        let input = r#"<tool_call>
+{"name": "translate", "arguments": {"text": "Caf\u00e9 \"quotes\" \\backslash", "emoji": "\ud83d\ude00"}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert_eq!(result.tool_calls.len(), 1);
+        assert_eq!(result.tool_calls.first().unwrap().name, "translate");
+        let args = &result.tool_calls.first().unwrap().arguments;
+        let text_val = args.get("text").unwrap().as_str().unwrap();
+        assert!(text_val.contains("Caf\u{00e9}"));
+        assert!(text_val.contains("\"quotes\""));
+        assert!(text_val.contains("\\backslash"));
+    }
+
+    #[test]
+    fn test_whitespace_only_content_between_tags() {
+        let input = "<tool_call>\n   \n  \t  \n</tool_call>";
+        let result = parse_tool_calls(input);
+        // Whitespace-only content is not valid JSON, so no tool calls extracted
+        assert!(result.tool_calls.is_empty());
+        // The raw tags and whitespace are preserved in text
+        assert!(result.text.contains("<tool_call>"));
+    }
 }

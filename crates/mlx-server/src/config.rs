@@ -183,4 +183,95 @@ mod tests {
         let config: ServerConfig = figment.extract().unwrap();
         assert_eq!(config.api_key, Some("sk-test-123".to_owned()));
     }
+
+    #[test]
+    fn test_port_zero_is_accepted() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("port", 0_u16));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert_eq!(config.port, 0);
+    }
+
+    #[test]
+    fn test_max_tokens_zero() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("max_tokens", 0_u32));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert_eq!(config.max_tokens, 0);
+    }
+
+    #[test]
+    fn test_timeout_zero() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("timeout", 0.0_f64));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert!(config.timeout.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_negative_timeout() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("timeout", -1.0_f64));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert!((config.timeout - (-1.0)).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_rate_limit_zero_means_disabled() {
+        let config = ServerConfig::default();
+        assert_eq!(config.rate_limit, 0);
+    }
+
+    #[test]
+    fn test_rate_limit_nonzero_means_enabled() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("rate_limit", 60_u32));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert_eq!(config.rate_limit, 60);
+    }
+
+    #[test]
+    fn test_empty_string_model_path() {
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("model", ""));
+
+        let config: ServerConfig = figment.extract().unwrap();
+        assert_eq!(config.model, "");
+    }
+
+    #[test]
+    fn test_api_key_empty_string_vs_none() {
+        let config = ServerConfig::default();
+        assert!(config.api_key.is_none());
+
+        let figment = Figment::new()
+            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::default("api_key", ""));
+
+        let config_with_empty: ServerConfig = figment.extract().unwrap();
+        assert_eq!(config_with_empty.api_key, Some(String::new()));
+    }
+
+    #[test]
+    fn test_default_timeout_is_300() {
+        let config = ServerConfig::default();
+        assert!((config.timeout - 300.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_default_rate_limit_is_zero() {
+        let config = ServerConfig::default();
+        assert_eq!(config.rate_limit, 0);
+    }
 }

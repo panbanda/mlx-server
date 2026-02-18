@@ -1,13 +1,24 @@
 {
   "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "rust",
+  "bump-minor-pre-major": true,
+  "bump-patch-for-minor-pre-major": true,
+  "include-v-in-tag": true,
   "packages": {
-    ".": {
-      "release-type": "rust",
-      "component": "mlx-server",
-      "include-component-in-tag": true,
-      "include-v-in-tag": true,
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true
+    "crates/mlx-models": {
+      "component": "mlx-models"
+    },
+    "crates/mlx-engine": {
+      "component": "mlx-engine"
+    },
+    "crates/mlx-server": {
+      "component": "mlx-server"
     }
-  }
+  },
+  "plugins": [
+    {
+      "type": "cargo-workspace",
+      "merge": true
+    }
+  ]
 }

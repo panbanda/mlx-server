@@ -161,4 +161,87 @@ mod tests {
         assert_eq!(result_values.shape(), &[1, 2, 5, 8]);
         assert_eq!(cache.offset(), 5);
     }
+
+    #[test]
+    fn test_concat_cache_many_sequential_updates() {
+        let mut cache = ConcatKeyValueCache::new();
+
+        // First update with 3 tokens
+        let keys = Array::zeros::<f32>(&[1, 2, 3, 8]).unwrap();
+        let values = Array::zeros::<f32>(&[1, 2, 3, 8]).unwrap();
+        cache.update_and_fetch(keys, values).unwrap();
+        assert_eq!(cache.offset(), 3);
+
+        // 5 more single-token updates
+        for i in 0..5 {
+            let k = Array::zeros::<f32>(&[1, 2, 1, 8]).unwrap();
+            let v = Array::zeros::<f32>(&[1, 2, 1, 8]).unwrap();
+            let (rk, rv) = cache.update_and_fetch(k, v).unwrap();
+            let expected_seq = 3 + i + 1;
+            assert_eq!(cache.offset(), expected_seq);
+            assert_eq!(rk.shape(), &[1, 2, expected_seq, 8]);
+            assert_eq!(rv.shape(), &[1, 2, expected_seq, 8]);
+        }
+
+        assert_eq!(cache.offset(), 8);
+    }
+
+    #[test]
+    fn test_concat_cache_default_values() {
+        let cache = ConcatKeyValueCache::default();
+        assert_eq!(cache.offset(), 0);
+        assert!(cache.max_size().is_none());
+        assert!(!cache.is_quantized());
+        assert!(cache.group_size().is_none());
+        assert!(cache.bits().is_none());
+    }
+
+    #[test]
+    fn test_concat_cache_mismatched_shapes_error() {
+        let mut cache = ConcatKeyValueCache::new();
+
+        // Initial update with shape [1, 2, 4, 8]
+        let keys1 = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
+        let values1 = Array::zeros::<f32>(&[1, 2, 4, 8]).unwrap();
+        cache.update_and_fetch(keys1, values1).unwrap();
+
+        // Second update with mismatched head_dim (16 instead of 8)
+        let keys2 = Array::zeros::<f32>(&[1, 2, 1, 16]).unwrap();
+        let values2 = Array::zeros::<f32>(&[1, 2, 1, 16]).unwrap();
+        let result = cache.update_and_fetch(keys2, values2);
+        assert!(
+            result.is_err(),
+            "Mismatched head_dim should fail concatenation"
+        );
+    }
+
+    #[test]
+    fn test_concat_cache_1d_keys_error() {
+        let mut cache = ConcatKeyValueCache::new();
+        // 1D arrays have fewer than 2 dimensions
+        let keys = Array::zeros::<f32>(&[4]).unwrap();
+        let values = Array::zeros::<f32>(&[4]).unwrap();
+        let result = cache.update_and_fetch(keys, values);
+        // This should error because concatenate_axis on axis -2 needs at least 2 dims
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_concat_cache_ref_mut_delegation() {
+        let mut cache = ConcatKeyValueCache::new();
+        let cache_ref: &mut ConcatKeyValueCache = &mut cache;
+
+        assert_eq!(KeyValueCache::offset(&cache_ref), 0);
+        assert!(KeyValueCache::max_size(&cache_ref).is_none());
+        assert!(!KeyValueCache::is_quantized(&cache_ref));
+        assert!(KeyValueCache::group_size(&cache_ref).is_none());
+        assert!(KeyValueCache::bits(&cache_ref).is_none());
+
+        let keys = Array::zeros::<f32>(&[1, 2, 3, 8]).unwrap();
+        let values = Array::zeros::<f32>(&[1, 2, 3, 8]).unwrap();
+        let (rk, rv) = cache_ref.update_and_fetch(keys, values).unwrap();
+        assert_eq!(rk.shape(), &[1, 2, 3, 8]);
+        assert_eq!(rv.shape(), &[1, 2, 3, 8]);
+        assert_eq!(KeyValueCache::offset(&cache_ref), 3);
+    }
 }

@@ -55,6 +55,104 @@ pub fn load_tokenizer(model_dir: impl AsRef<Path>) -> Result<tokenizers::Tokeniz
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    // Model loading tests require a local model directory and are run as integration tests.
+    use super::*;
+
+    #[test]
+    fn model_config_from_dir_qwen2() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen2"}"#).unwrap();
+        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        assert_eq!(config.model_type, "qwen2");
+        assert_eq!(config.model_dir, dir.path());
+    }
+
+    #[test]
+    fn model_config_from_dir_qwen3() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen3"}"#).unwrap();
+        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        assert_eq!(config.model_type, "qwen3");
+    }
+
+    #[test]
+    fn model_config_from_dir_llama() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "llama"}"#).unwrap();
+        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        assert_eq!(config.model_type, "llama");
+    }
+
+    #[test]
+    fn model_config_from_dir_mistral() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"model_type": "mistral"}"#,
+        )
+        .unwrap();
+        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        assert_eq!(config.model_type, "mistral");
+    }
+
+    #[test]
+    fn model_config_from_dir_qwen3_next() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"model_type": "qwen3_next"}"#,
+        )
+        .unwrap();
+        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        assert_eq!(config.model_type, "qwen3_next");
+    }
+
+    #[test]
+    fn model_config_from_dir_unsupported_model_type() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "gpt2"}"#).unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        match result {
+            Err(e) => assert!(e.to_string().contains("gpt2")),
+            Ok(_) => panic!("Expected error for unsupported model type"),
+        }
+    }
+
+    #[test]
+    fn model_config_from_dir_missing_config_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn model_config_from_dir_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "not valid json {{{").unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn model_config_from_dir_missing_model_type_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"vocab_size": 32000, "hidden_size": 4096}"#,
+        )
+        .unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_tokenizer_missing_tokenizer_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_tokenizer(dir.path());
+        match result {
+            Err(e) => assert!(e.to_string().contains("Tokenization error")),
+            Ok(_) => panic!("Expected error for missing tokenizer.json"),
+        }
+    }
 }

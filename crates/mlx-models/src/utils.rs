@@ -86,3 +86,167 @@ where
         Ok(None)
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use crate::cache::ConcatKeyValueCache;
+
+    #[test]
+    fn test_create_causal_mask_n4() {
+        // N=4, no offset: should produce a 4x4 lower-triangular bool mask
+        // Row i, col j: mask[i,j] = (j >= i) => upper triangular if comparing col >= row
+        // Actually the code does col_expanded.ge(row_expanded) where
+        //   col = [offset..offset+N] (the token positions) expanded as column
+        //   row = [0..offset+N] expanded as row
+        // For offset=0, N=4:
+        //   col_indices = [0,1,2,3] -> shape [4,1]
+        //   row_indices = [0,1,2,3] -> shape [1,4]
+        //   result[i,j] = col[i] >= row[j]
+        let mask = create_causal_mask(4, None).unwrap();
+        assert_eq!(mask.shape(), &[4, 4]);
+
+        // Evaluate the mask to get concrete values
+        let flat: Vec<bool> = mask.as_slice().to_vec();
+        // Expected: col[i] >= row[j]
+        // i=0: [0>=0, 0>=1, 0>=2, 0>=3] = [T, F, F, F]
+        // i=1: [1>=0, 1>=1, 1>=2, 1>=3] = [T, T, F, F]
+        // i=2: [2>=0, 2>=1, 2>=2, 2>=3] = [T, T, T, F]
+        // i=3: [3>=0, 3>=1, 3>=2, 3>=3] = [T, T, T, T]
+        let expected = [
+            true, false, false, false, true, true, false, false, true, true, true, false, true,
+            true, true, true,
+        ];
+        assert_eq!(flat, expected);
+    }
+
+    #[test]
+    fn test_create_causal_mask_n1() {
+        // N=1, no offset: single token, should be [1, 1] with value true
+        let mask = create_causal_mask(1, None).unwrap();
+        assert_eq!(mask.shape(), &[1, 1]);
+        let val: bool = mask.item();
+        assert!(val);
+    }
+
+    #[test]
+    fn test_create_causal_mask_with_offset() {
+        // N=2, offset=3: new tokens at positions 3,4; need to attend to all 5 positions
+        let mask = create_causal_mask(2, Some(3)).unwrap();
+        // col_indices = [3, 4] -> [2, 1]
+        // row_indices = [0, 1, 2, 3, 4] -> [1, 5]
+        // shape: [2, 5]
+        assert_eq!(mask.shape(), &[2, 5]);
+
+        let flat: Vec<bool> = mask.as_slice().to_vec();
+        // i=0 (col=3): [3>=0, 3>=1, 3>=2, 3>=3, 3>=4] = [T, T, T, T, F]
+        // i=1 (col=4): [4>=0, 4>=1, 4>=2, 4>=3, 4>=4] = [T, T, T, T, T]
+        let expected = [true, true, true, true, false, true, true, true, true, true];
+        assert_eq!(flat, expected);
+    }
+
+    #[test]
+    fn test_create_attention_mask_single_token() {
+        // T=1: no mask needed
+        let h = Array::zeros::<f32>(&[1, 1, 64]).unwrap();
+        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_create_attention_mask_multi_token_as_array() {
+        // T=3, no cache: should produce an array mask
+        let h = Array::zeros::<f32>(&[1, 3, 64]).unwrap();
+        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
+        assert!(result.is_some());
+        match result.unwrap() {
+            AttentionMask::Array(a) => assert_eq!(a.shape(), &[3, 3]),
+            AttentionMask::Causal => panic!("Expected Array mask"),
+        }
+    }
+
+    #[test]
+    fn test_create_attention_mask_multi_token_as_causal() {
+        // T=3, as_array=false: should return Causal variant
+        let h = Array::zeros::<f32>(&[1, 3, 64]).unwrap();
+        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let result = create_attention_mask(&h, &cache, Some(false)).unwrap();
+        assert!(result.is_some());
+        assert!(matches!(result.unwrap(), AttentionMask::Causal));
+    }
+
+    #[test]
+    fn test_create_attention_mask_default_is_causal() {
+        // as_array=None defaults to false (Causal)
+        let h = Array::zeros::<f32>(&[1, 4, 64]).unwrap();
+        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let result = create_attention_mask(&h, &cache, None).unwrap();
+        assert!(matches!(result.unwrap(), AttentionMask::Causal));
+    }
+
+    #[test]
+    fn test_create_attention_mask_with_cache_offset() {
+        // Pre-populate cache so offset > 0
+        let h = Array::zeros::<f32>(&[1, 2, 64]).unwrap();
+        let mut kv_cache = ConcatKeyValueCache::new();
+        let keys = Array::zeros::<f32>(&[1, 2, 5, 8]).unwrap();
+        let values = Array::zeros::<f32>(&[1, 2, 5, 8]).unwrap();
+        kv_cache.update_and_fetch(keys, values).unwrap();
+        assert_eq!(kv_cache.offset(), 5);
+
+        let cache: Vec<Option<ConcatKeyValueCache>> = vec![Some(kv_cache)];
+        let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
+        match result.unwrap() {
+            AttentionMask::Array(a) => {
+                // N=2 tokens, offset=5: mask shape [2, 7]
+                assert_eq!(a.shape(), &[2, 7]);
+            }
+            AttentionMask::Causal => panic!("Expected Array mask"),
+        }
+    }
+
+    #[test]
+    fn test_scaled_dot_product_attention_output_shape() {
+        // B=1, H=2, L=3, D=4
+        let queries = Array::ones::<f32>(&[1, 2, 3, 4]).unwrap();
+        let keys = Array::ones::<f32>(&[1, 2, 3, 4]).unwrap();
+        let values = Array::ones::<f32>(&[1, 2, 3, 4]).unwrap();
+        let scale = (4.0_f32).sqrt().recip();
+        let result = scaled_dot_product_attention(queries, keys, values, scale, None).unwrap();
+        assert_eq!(result.shape(), &[1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_scaled_dot_product_attention_single_head_single_token() {
+        // B=1, H=1, L=1, D=2
+        let queries = Array::ones::<f32>(&[1, 1, 1, 2]).unwrap();
+        let keys = Array::ones::<f32>(&[1, 1, 1, 2]).unwrap();
+        let values = Array::from_slice(&[3.0_f32, 7.0], &[1, 1, 1, 2]);
+        let scale = (2.0_f32).sqrt().recip();
+        let result = scaled_dot_product_attention(queries, keys, values, scale, None).unwrap();
+        assert_eq!(result.shape(), &[1, 1, 1, 2]);
+        // With single KV pair, softmax(score) = [1.0], so output = values
+        let v0: f32 = result.index((.., .., .., 0..1)).item();
+        let v1: f32 = result.index((.., .., .., 1..2)).item();
+        assert!((v0 - 3.0).abs() < 1e-4);
+        assert!((v1 - 7.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn test_attention_mask_conversion_array() {
+        let arr = Array::ones::<f32>(&[3, 3]).unwrap();
+        let mask = AttentionMask::Array(arr);
+        let sdpa_mask: ScaledDotProductAttentionMask = (&mask).into();
+        assert!(matches!(sdpa_mask, ScaledDotProductAttentionMask::Array(_)));
+    }
+
+    #[test]
+    fn test_attention_mask_conversion_causal() {
+        let mask = AttentionMask::Causal;
+        let sdpa_mask: ScaledDotProductAttentionMask = (&mask).into();
+        assert!(matches!(sdpa_mask, ScaledDotProductAttentionMask::Causal));
+    }
+}

@@ -836,4 +836,281 @@ mod tests {
         let args: ModelArgs = serde_json::from_str(json).unwrap();
         assert!(args.quantization.is_none());
     }
+
+    #[test]
+    fn test_model_args_missing_optional_fields_use_defaults() {
+        // Minimal config: only required fields
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 512,
+            "num_hidden_layers": 4,
+            "intermediate_size": 1024,
+            "num_attention_heads": 8,
+            "rms_norm_eps": 1e-05,
+            "vocab_size": 8000,
+            "num_key_value_heads": 4,
+            "max_position_embeddings": 2048
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.rope_theta, 10000.0);
+        assert!(!args.tie_word_embeddings);
+        assert!(!args.use_sliding_window);
+        assert!(args.sliding_window.is_none());
+        assert!(args.rope_scaling.is_none());
+        assert!(args.quantization.is_none());
+    }
+
+    #[test]
+    fn test_checked_head_dim_valid_cases() {
+        // 768 / 12 = 64
+        let json = r#"{
+            "model_type": "qwen2",
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "intermediate_size": 2048,
+            "num_attention_heads": 12,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 32000,
+            "num_key_value_heads": 4,
+            "max_position_embeddings": 4096
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.checked_head_dim().unwrap(), 64);
+
+        // 4096 / 32 = 128
+        let json2 = r#"{
+            "model_type": "llama",
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "intermediate_size": 11008,
+            "num_attention_heads": 32,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 32000,
+            "num_key_value_heads": 32,
+            "max_position_embeddings": 4096
+        }"#;
+        let args2: ModelArgs = serde_json::from_str(json2).unwrap();
+        assert_eq!(args2.checked_head_dim().unwrap(), 128);
+
+        // 256 / 4 = 64
+        let json3 = r#"{
+            "model_type": "mistral",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512
+        }"#;
+        let args3: ModelArgs = serde_json::from_str(json3).unwrap();
+        assert_eq!(args3.checked_head_dim().unwrap(), 64);
+    }
+
+    #[test]
+    fn test_checked_head_dim_error_messages() {
+        // Zero heads
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "intermediate_size": 2048,
+            "num_attention_heads": 0,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 32000,
+            "num_key_value_heads": 4,
+            "max_position_embeddings": 4096
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let err = args.checked_head_dim().unwrap_err();
+        assert!(err.to_string().contains("positive"));
+
+        // Not divisible
+        let json2 = r#"{
+            "model_type": "llama",
+            "hidden_size": 100,
+            "num_hidden_layers": 2,
+            "intermediate_size": 256,
+            "num_attention_heads": 7,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 512
+        }"#;
+        let args2: ModelArgs = serde_json::from_str(json2).unwrap();
+        let err2 = args2.checked_head_dim().unwrap_err();
+        assert!(err2.to_string().contains("divisible"));
+    }
+
+    #[test]
+    fn test_model_new_zero_num_hidden_layers() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 256,
+            "num_hidden_layers": 0,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let result = Model::new(args);
+        assert!(result.is_err(), "Should reject num_hidden_layers == 0");
+    }
+
+    #[test]
+    fn test_model_new_zero_num_key_value_heads() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 0,
+            "max_position_embeddings": 512
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let result = Model::new(args);
+        assert!(result.is_err(), "Should reject num_key_value_heads == 0");
+    }
+
+    #[test]
+    fn test_model_new_zero_vocab_size() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 0,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let result = Model::new(args);
+        assert!(result.is_err(), "Should reject vocab_size == 0");
+    }
+
+    #[test]
+    fn test_model_new_valid_with_tied_embeddings() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512,
+            "tie_word_embeddings": true
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let model = Model::new(args).unwrap();
+        assert_eq!(model.model_type(), "llama");
+        // lm_head is None when tied
+        assert!(model.lm_head.is_none());
+    }
+
+    #[test]
+    fn test_model_new_valid_without_tied_embeddings() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512,
+            "tie_word_embeddings": false
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let model = Model::new(args).unwrap();
+        assert_eq!(model.model_type(), "qwen2");
+        assert!(model.lm_head.is_some());
+    }
+
+    #[test]
+    fn test_load_model_args_valid_qwen3_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 2048,
+            "num_hidden_layers": 28,
+            "intermediate_size": 8960,
+            "num_attention_heads": 16,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 32768
+        }"#;
+        std::fs::write(dir.path().join("config.json"), config).unwrap();
+        let args = load_model_args(dir.path()).unwrap();
+        assert_eq!(args.model_type, "qwen3");
+        assert!(args.qkv_bias());
+    }
+
+    #[test]
+    fn test_load_model_args_valid_llama_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{
+            "model_type": "llama",
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "intermediate_size": 11008,
+            "num_attention_heads": 32,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 32000,
+            "num_key_value_heads": 32,
+            "max_position_embeddings": 4096
+        }"#;
+        std::fs::write(dir.path().join("config.json"), config).unwrap();
+        let args = load_model_args(dir.path()).unwrap();
+        assert_eq!(args.model_type, "llama");
+        assert!(!args.qkv_bias());
+    }
+
+    #[test]
+    fn test_qkv_bias_for_unsupported_types() {
+        // model_type that is not qwen2/qwen3 should not have bias
+        let json = r#"{
+            "model_type": "custom_arch",
+            "hidden_size": 256,
+            "num_hidden_layers": 2,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert!(!args.qkv_bias());
+    }
+
+    #[test]
+    fn test_model_new_negative_num_hidden_layers() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 256,
+            "num_hidden_layers": -1,
+            "intermediate_size": 512,
+            "num_attention_heads": 4,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 1000,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 512
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let result = Model::new(args);
+        assert!(result.is_err(), "Should reject negative num_hidden_layers");
+    }
 }

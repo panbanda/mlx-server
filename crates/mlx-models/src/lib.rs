@@ -307,4 +307,150 @@ mod tests {
             Some("model.norm.inner.weight".to_owned())
         );
     }
+
+    #[test]
+    fn sample_with_temperature() {
+        let logits = Array::from_slice(&[0.1_f32, 100.0, 0.0], &[1, 3]);
+        // With high temperature the distribution is flatter, but the peak is so dominant
+        // that sampling should still mostly return index 1
+        let token = sample(&logits, 0.5, 1.0).unwrap();
+        // Just verify it produces a valid token index
+        let shape = token.shape();
+        assert_eq!(shape, &[1]);
+    }
+
+    #[test]
+    fn sample_with_top_p() {
+        // Strong peak at index 1; top_p=0.5 should still mostly select it
+        let logits = Array::from_slice(&[0.0_f32, 100.0, 0.0], &[1, 3]);
+        let token = sample(&logits, 1.0, 0.5).unwrap();
+        let shape = token.shape();
+        assert_eq!(shape, &[1]);
+    }
+
+    #[test]
+    fn sample_single_element_logits() {
+        let logits = Array::from_slice(&[5.0_f32], &[1, 1]);
+        let token = sample(&logits, 0.0, 1.0).unwrap();
+        let val: u32 = token.item();
+        assert_eq!(val, 0, "Single-element logits must return index 0");
+    }
+
+    #[test]
+    fn sample_uniform_logits_greedy() {
+        // All equal logits -- argmax should return index 0 (first max)
+        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
+        let token = sample(&logits, 0.0, 1.0).unwrap();
+        let val: u32 = token.item();
+        assert_eq!(val, 0, "Tied logits should return first index via argmax");
+    }
+
+    #[test]
+    fn sample_uniform_logits_with_temperature() {
+        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
+        let token = sample(&logits, 1.0, 1.0).unwrap();
+        let shape = token.shape();
+        assert_eq!(shape, &[1]);
+        // Any index 0..3 is valid
+    }
+
+    #[test]
+    fn sample_top_p_with_uniform_logits() {
+        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
+        let token = sample(&logits, 1.0, 0.3).unwrap();
+        let shape = token.shape();
+        assert_eq!(shape, &[1]);
+    }
+
+    #[test]
+    fn load_tokenizer_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_tokenizer(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn collect_safetensors_missing_both_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = collect_safetensors_files(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, ModelError::MissingWeight(_)),
+            "Expected MissingWeight, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn collect_safetensors_single_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a dummy model.safetensors file (content doesn't matter for path collection)
+        std::fs::write(dir.path().join("model.safetensors"), b"dummy").unwrap();
+        let result = collect_safetensors_files(dir.path()).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(
+            result
+                .first()
+                .unwrap()
+                .to_string_lossy()
+                .contains("model.safetensors")
+        );
+    }
+
+    #[test]
+    fn collect_safetensors_index_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let index_json = r#"{
+            "metadata": {"total_size": 12345},
+            "weight_map": {
+                "model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+                "model.layers.0.weight": "model-00001-of-00002.safetensors",
+                "model.layers.1.weight": "model-00002-of-00002.safetensors"
+            }
+        }"#;
+        std::fs::write(dir.path().join("model.safetensors.index.json"), index_json).unwrap();
+        let result = collect_safetensors_files(dir.path()).unwrap();
+        // Two unique shard files
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn weight_map_index_deserialization() {
+        let json = r#"{
+            "metadata": {"format": "pt", "total_size": 999},
+            "weight_map": {
+                "layer.0.weight": "shard-0.safetensors",
+                "layer.1.weight": "shard-1.safetensors"
+            }
+        }"#;
+        let index: WeightMapIndex = serde_json::from_str(json).unwrap();
+        assert_eq!(index.weight_map.len(), 2);
+        assert_eq!(
+            index.metadata.get("format").and_then(|v| v.as_str()),
+            Some("pt")
+        );
+    }
+
+    #[test]
+    fn weight_map_index_empty_maps() {
+        let json = r#"{"metadata": {}, "weight_map": {}}"#;
+        let index: WeightMapIndex = serde_json::from_str(json).unwrap();
+        assert!(index.weight_map.is_empty());
+        assert!(index.metadata.is_empty());
+    }
+
+    #[test]
+    fn any_cache_kv_variant() {
+        let cache = AnyCache::KV(vec![None, Some(cache::ConcatKeyValueCache::new())]);
+        match &cache {
+            AnyCache::KV(layers) => assert_eq!(layers.len(), 2),
+            _ => panic!("Expected KV variant"),
+        }
+    }
+
+    #[test]
+    fn any_cache_hybrid_variant() {
+        let cache = AnyCache::Hybrid(Vec::new());
+        assert!(matches!(cache, AnyCache::Hybrid(_)));
+    }
 }

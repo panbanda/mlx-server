@@ -306,4 +306,242 @@ mod tests {
         assert_eq!(stops[0], "END");
         assert_eq!(stops[1], "STOP");
     }
+
+    #[test]
+    fn test_create_message_request_max_tokens_zero() {
+        let json = r#"{
+            "model": "test",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 0
+        }"#;
+        let req: CreateMessageRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.max_tokens, 0);
+    }
+
+    #[test]
+    fn test_create_message_request_temperature_zero() {
+        let json = r#"{
+            "model": "test",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 100,
+            "temperature": 0.0
+        }"#;
+        let req: CreateMessageRequest = serde_json::from_str(json).unwrap();
+        assert!((req.temperature.unwrap()).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_anthropic_content_text_deserialization() {
+        let json = r#"{"role": "user", "content": "simple text"}"#;
+        let msg: AnthropicMessage = serde_json::from_str(json).unwrap();
+        match &msg.content {
+            AnthropicContent::Text(s) => assert_eq!(s, "simple text"),
+            AnthropicContent::Blocks(_) => panic!("expected Text variant"),
+        }
+    }
+
+    #[test]
+    fn test_anthropic_content_blocks_mixed_types() {
+        let json = r#"{
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Let me check"},
+                {"type": "tool_use", "id": "tu_1", "name": "calculator", "input": {"expr": "2+2"}},
+                {"type": "text", "text": "The answer is 4"}
+            ]
+        }"#;
+        let msg: AnthropicMessage = serde_json::from_str(json).unwrap();
+        match &msg.content {
+            AnthropicContent::Blocks(blocks) => {
+                assert_eq!(blocks.len(), 3);
+                assert!(
+                    matches!(&blocks[0], ContentBlock::Text { text } if text == "Let me check")
+                );
+                assert!(
+                    matches!(&blocks[1], ContentBlock::ToolUse { name, .. } if name == "calculator")
+                );
+                assert!(
+                    matches!(&blocks[2], ContentBlock::Text { text } if text == "The answer is 4")
+                );
+            }
+            AnthropicContent::Text(_) => panic!("expected Blocks variant"),
+        }
+    }
+
+    #[test]
+    fn test_tool_use_with_complex_json_input() {
+        let json = r#"{
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "tu_complex",
+                "name": "database_query",
+                "input": {
+                    "query": "SELECT * FROM users",
+                    "params": [1, "hello", null, true],
+                    "nested": {"key": {"deep": [1,2,3]}}
+                }
+            }]
+        }"#;
+        let msg: AnthropicMessage = serde_json::from_str(json).unwrap();
+        if let AnthropicContent::Blocks(blocks) = &msg.content {
+            if let ContentBlock::ToolUse { input, .. } = &blocks[0] {
+                assert_eq!(input["query"], "SELECT * FROM users");
+                assert!(input["params"].is_array());
+                assert!(input["nested"]["key"]["deep"].is_array());
+            } else {
+                panic!("expected ToolUse block");
+            }
+        } else {
+            panic!("expected Blocks variant");
+        }
+    }
+
+    #[test]
+    fn test_tool_result_with_very_long_content() {
+        let long_content = "x".repeat(10_000);
+        let json = format!(
+            r#"{{"role": "user", "content": [{{"type": "tool_result", "tool_use_id": "tu_1", "content": "{long_content}"}}]}}"#,
+        );
+        let msg: AnthropicMessage = serde_json::from_str(&json).unwrap();
+        if let AnthropicContent::Blocks(blocks) = &msg.content {
+            if let ContentBlock::ToolResult { content, .. } = &blocks[0] {
+                assert_eq!(content.len(), 10_000);
+            } else {
+                panic!("expected ToolResult block");
+            }
+        } else {
+            panic!("expected Blocks variant");
+        }
+    }
+
+    #[test]
+    fn test_count_tokens_request_empty_messages() {
+        let json = r#"{
+            "model": "test",
+            "messages": []
+        }"#;
+        let req: CountTokensRequest = serde_json::from_str(json).unwrap();
+        assert!(req.messages.is_empty());
+        assert!(req.system.is_none());
+    }
+
+    #[test]
+    fn test_count_tokens_request_with_system_prompt() {
+        let json = r#"{
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "system": "You are a helpful assistant."
+        }"#;
+        let req: CountTokensRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.system, Some("You are a helpful assistant.".to_owned()));
+    }
+
+    #[test]
+    fn test_message_start_event_type_field() {
+        let event = MessageStartEvent {
+            event_type: "message_start",
+            message: MessageStartPayload {
+                id: "msg_1".to_owned(),
+                message_type: "message",
+                role: "assistant",
+                content: vec![],
+                model: "test".to_owned(),
+                stop_reason: None,
+                usage: AnthropicUsage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                },
+            },
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "message_start");
+    }
+
+    #[test]
+    fn test_content_block_start_event_type_field() {
+        let event = ContentBlockStartEvent {
+            event_type: "content_block_start",
+            index: 0,
+            content_block: ContentBlockStartPayload {
+                block_type: "text",
+                text: String::new(),
+            },
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "content_block_start");
+    }
+
+    #[test]
+    fn test_content_block_delta_event_type_field() {
+        let event = ContentBlockDeltaEvent {
+            event_type: "content_block_delta",
+            index: 0,
+            delta: TextDelta {
+                delta_type: "text_delta",
+                text: "Hello".to_owned(),
+            },
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "content_block_delta");
+        assert_eq!(json["delta"]["type"], "text_delta");
+    }
+
+    #[test]
+    fn test_content_block_stop_event_type_field() {
+        let event = ContentBlockStopEvent {
+            event_type: "content_block_stop",
+            index: 0,
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "content_block_stop");
+    }
+
+    #[test]
+    fn test_message_delta_event_type_field() {
+        let event = MessageDeltaEvent {
+            event_type: "message_delta",
+            delta: MessageDelta {
+                stop_reason: Some("end_turn".to_owned()),
+            },
+            usage: AnthropicUsage {
+                input_tokens: 10,
+                output_tokens: 5,
+            },
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "message_delta");
+    }
+
+    #[test]
+    fn test_message_stop_event_type_field() {
+        let event = MessageStopEvent {
+            event_type: "message_stop",
+        };
+        let json: serde_json::Value = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["type"], "message_stop");
+    }
+
+    #[test]
+    fn test_anthropic_request_with_tools() {
+        let json = r#"{
+            "model": "test",
+            "messages": [{"role": "user", "content": "What is the weather?"}],
+            "max_tokens": 100,
+            "tools": [
+                {
+                    "name": "get_weather",
+                    "description": "Get current weather",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}}
+                    }
+                }
+            ]
+        }"#;
+        let req: CreateMessageRequest = serde_json::from_str(json).unwrap();
+        assert!(req.tools.is_some());
+        let tools = req.tools.unwrap();
+        assert_eq!(tools.len(), 1);
+    }
 }

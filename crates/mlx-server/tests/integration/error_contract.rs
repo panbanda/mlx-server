@@ -116,3 +116,38 @@ async fn error_response_content_type_is_json() {
         "Expected application/json, got: {content_type}"
     );
 }
+
+#[tokio::test]
+async fn error_response_with_very_long_message() {
+    let long_msg = "a".repeat(5000);
+    let error = ServerError::BadRequest(long_msg.clone());
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message.len(), 5000);
+    assert_eq!(message, long_msg);
+}
+
+#[tokio::test]
+async fn error_response_with_special_characters() {
+    let special_msg = r#"Invalid "field": <script>alert('xss')</script> & more \n\t"#;
+    let error = ServerError::BadRequest(special_msg.to_owned());
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message, special_msg);
+}
+
+#[tokio::test]
+async fn internal_error_with_special_characters_still_masked() {
+    let special_msg = r#"DB error: column "user's data" has <invalid> type & NULL"#;
+    let error = ServerError::InternalError(special_msg.to_owned());
+    let (status, body, _) = extract_response(error).await;
+
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message, "Internal server error");
+    assert!(!message.contains("DB error"));
+}

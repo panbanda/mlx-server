@@ -693,4 +693,130 @@ mod tests {
         let result = super::extract_eos_tokens(dir.path());
         assert!(result.is_empty());
     }
+
+    // -- Additional check_stop_sequences edge cases --
+
+    #[test]
+    fn test_stop_sequence_substring_of_another() {
+        // "stop" is a substring of "stop_now"
+        let text = "Hello stop_now world";
+        let stops = vec!["stop_now".to_owned(), "stop".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        // "stop" appears at position 6, "stop_now" also at position 6
+        // Both match at same position, earliest is 6
+        assert_eq!(result, Some("Hello ".to_owned()));
+    }
+
+    #[test]
+    fn test_stop_sequence_unicode() {
+        let text = "Hello world, a]b stop here";
+        let stops = vec!["\u{1F600}".to_owned()]; // emoji stop sequence
+        let result = check_stop_sequences(text, &stops);
+        assert!(result.is_none()); // emoji not present
+
+        let text_with_emoji = "Hello \u{1F600} world";
+        let result2 = check_stop_sequences(text_with_emoji, &stops);
+        assert_eq!(result2, Some("Hello ".to_owned()));
+    }
+
+    #[test]
+    fn test_stop_sequence_unicode_multibyte() {
+        let text = "Bonjour le monde, arr\u{00EA}t ici";
+        let stops = vec!["arr\u{00EA}t".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("Bonjour le monde, ".to_owned()));
+    }
+
+    #[test]
+    fn test_stop_sequence_very_long_text_short_stop() {
+        let long_text = "a".repeat(10_000) + "STOP" + &"b".repeat(5_000);
+        let stops = vec!["STOP".to_owned()];
+        let result = check_stop_sequences(&long_text, &stops);
+        assert_eq!(result, Some("a".repeat(10_000)));
+    }
+
+    // -- Additional extract_eos_tokens edge cases --
+
+    #[test]
+    fn test_extract_eos_tokens_float_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": 151643.0}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        // serde_json parses 151643.0 as a float, and as_u64() returns None for floats,
+        // so the result is empty. This is a Number variant but not integer-representable.
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_string_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": "not_a_number"}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_nested_array() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": [[1, 2], [3, 4]]}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        // Nested arrays: inner arrays are not numbers, so as_u64() returns None for them
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_negative_number() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"eos_token_id": -1}"#).unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        // as_u64() returns None for negative numbers
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_very_large_number() {
+        let dir = tempfile::tempdir().unwrap();
+        // u32::MAX is 4294967295, use a number larger than that
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": 4294967296}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        // as_u64() succeeds but u32::try_from fails for values > u32::MAX
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_empty_array() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"eos_token_id": []}"#).unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_mixed_types_in_array() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": [1, "two", 3]}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        // Only numeric entries are extracted; "two" is skipped
+        assert_eq!(result, vec![1, 3]);
+    }
 }

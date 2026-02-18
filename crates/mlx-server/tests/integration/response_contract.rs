@@ -475,3 +475,129 @@ fn completion_chunk_serializes_as_valid_sse_data() {
     let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
     assert_eq!(parsed["choices"][0]["text"], "token");
 }
+
+// ---------------------------------------------------------------------------
+// Response with tool_calls in choices
+// ---------------------------------------------------------------------------
+
+#[test]
+fn chat_completion_response_with_tool_calls_in_choices() {
+    let resp = ChatCompletionResponse {
+        id: "chatcmpl-tools".to_owned(),
+        object: "chat.completion",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChoice {
+            index: 0,
+            message: ChatCompletionMessage {
+                role: "assistant".to_owned(),
+                content: None,
+                tool_calls: Some(vec![
+                    ToolCall {
+                        id: "call_1".to_owned(),
+                        r#type: "function".to_owned(),
+                        function: ToolCallFunction {
+                            name: "get_weather".to_owned(),
+                            arguments: r#"{"city":"London"}"#.to_owned(),
+                        },
+                    },
+                    ToolCall {
+                        id: "call_2".to_owned(),
+                        r#type: "function".to_owned(),
+                        function: ToolCallFunction {
+                            name: "get_time".to_owned(),
+                            arguments: r#"{"timezone":"UTC"}"#.to_owned(),
+                        },
+                    },
+                ]),
+                tool_call_id: None,
+            },
+            finish_reason: "tool_calls".to_owned(),
+        }],
+        usage: CompletionUsage {
+            prompt_tokens: 10,
+            completion_tokens: 20,
+            total_tokens: 30,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    let tool_calls = json["choices"][0]["message"]["tool_calls"]
+        .as_array()
+        .unwrap();
+    assert_eq!(tool_calls.len(), 2);
+    assert_eq!(tool_calls[0]["id"], "call_1");
+    assert_eq!(tool_calls[1]["function"]["name"], "get_time");
+    // content should be omitted when None
+    assert!(json["choices"][0]["message"].get("content").is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Completion response with multiple choices
+// ---------------------------------------------------------------------------
+
+#[test]
+fn completion_response_with_multiple_choices() {
+    let resp = CompletionResponse {
+        id: "cmpl-multi".to_owned(),
+        object: "text_completion",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![
+            CompletionChoice {
+                index: 0,
+                text: "first completion".to_owned(),
+                finish_reason: "stop".to_owned(),
+            },
+            CompletionChoice {
+                index: 1,
+                text: "second completion".to_owned(),
+                finish_reason: "length".to_owned(),
+            },
+        ],
+        usage: CompletionUsage {
+            prompt_tokens: 5,
+            completion_tokens: 10,
+            total_tokens: 15,
+        },
+    };
+    let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
+
+    let choices = json["choices"].as_array().unwrap();
+    assert_eq!(choices.len(), 2);
+    assert_eq!(choices[0]["index"], 0);
+    assert_eq!(choices[0]["text"], "first completion");
+    assert_eq!(choices[1]["index"], 1);
+    assert_eq!(choices[1]["finish_reason"], "length");
+}
+
+// ---------------------------------------------------------------------------
+// Streaming chunk with finish_reason set
+// ---------------------------------------------------------------------------
+
+#[test]
+fn streaming_chunk_with_finish_reason_set() {
+    let chunk = ChatCompletionChunk {
+        id: "chatcmpl-final".to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta: ChatCompletionDelta {
+                role: None,
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason: Some("stop".to_owned()),
+        }],
+    };
+    let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
+
+    assert_eq!(json["choices"][0]["finish_reason"], "stop");
+    // Delta should be empty object when all fields are None
+    let delta = &json["choices"][0]["delta"];
+    assert!(delta.get("role").is_none());
+    assert!(delta.get("content").is_none());
+}

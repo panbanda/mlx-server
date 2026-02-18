@@ -313,4 +313,76 @@ mod tests {
         let result = convert_messages(&[]);
         assert!(result.is_empty());
     }
+
+    #[test]
+    fn test_convert_messages_with_null_content() {
+        let msgs = vec![ChatCompletionMessage {
+            role: "assistant".to_owned(),
+            content: None,
+            tool_calls: None,
+            tool_call_id: None,
+        }];
+        let converted = convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        assert_eq!(converted.first().map(|m| m.content.as_str()), Some(""));
+    }
+
+    #[test]
+    fn test_convert_messages_with_tool_calls_complex_arguments() {
+        let msgs = vec![ChatCompletionMessage {
+            role: "assistant".to_owned(),
+            content: None,
+            tool_calls: Some(vec![
+                ToolCall {
+                    id: "call_1".to_owned(),
+                    r#type: "function".to_owned(),
+                    function: ToolCallFunction {
+                        name: "search".to_owned(),
+                        arguments: r#"{"query":"rust programming","filters":{"language":"en","year":2024}}"#
+                            .to_owned(),
+                    },
+                },
+                ToolCall {
+                    id: "call_2".to_owned(),
+                    r#type: "function".to_owned(),
+                    function: ToolCallFunction {
+                        name: "calculate".to_owned(),
+                        arguments: r#"{"expression":"2+2"}"#.to_owned(),
+                    },
+                },
+            ]),
+            tool_call_id: None,
+        }];
+        let converted = convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        let tool_calls = converted
+            .first()
+            .and_then(|m| m.tool_calls.as_ref())
+            .unwrap();
+        assert_eq!(tool_calls.len(), 2);
+    }
+
+    #[test]
+    fn test_generate_request_id_uniqueness() {
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..100 {
+            let id = generate_request_id();
+            assert!(ids.insert(id), "duplicate request ID generated");
+        }
+        assert_eq!(ids.len(), 100);
+    }
+
+    #[test]
+    fn test_generate_request_id_prefix() {
+        let id = generate_request_id();
+        assert!(id.starts_with("chatcmpl-"));
+        assert!(id.len() > "chatcmpl-".len());
+    }
+
+    #[test]
+    fn test_current_unix_timestamp_reasonable_value() {
+        let ts = current_unix_timestamp();
+        assert!(ts > 1_700_000_000, "timestamp too old: {ts}");
+        assert!(ts < 2_000_000_000, "timestamp too far in future: {ts}");
+    }
 }

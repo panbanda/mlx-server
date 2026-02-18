@@ -73,4 +73,95 @@ mod tests {
         assert!(!is_supported("Qwen2"));
         assert!(!is_supported("LLAMA"));
     }
+
+    #[test]
+    fn test_is_supported_qwen3_next() {
+        assert!(is_supported("qwen3_next"));
+    }
+
+    #[test]
+    fn test_detect_model_type_qwen3() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen3"}"#).unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "qwen3");
+    }
+
+    #[test]
+    fn test_detect_model_type_llama() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "llama"}"#).unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "llama");
+    }
+
+    #[test]
+    fn test_detect_model_type_mistral() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"model_type": "mistral"}"#,
+        )
+        .unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "mistral");
+    }
+
+    #[test]
+    fn test_detect_model_type_qwen3_next() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"model_type": "qwen3_next"}"#,
+        )
+        .unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "qwen3_next");
+    }
+
+    #[test]
+    fn test_detect_model_type_null_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": null}"#).unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported model"));
+    }
+
+    #[test]
+    fn test_detect_model_type_number_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": 42}"#).unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported model"));
+    }
+
+    #[test]
+    fn test_detect_model_type_empty_string_value() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": ""}"#).unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn test_detect_model_type_empty_json_object() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{}"#).unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported model"));
+    }
+
+    #[test]
+    fn test_detect_model_type_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "not json at all").unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+    }
 }

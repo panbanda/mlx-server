@@ -1404,4 +1404,235 @@ mod tests {
             _ => panic!("Expected Arrays variant"),
         }
     }
+
+    #[test]
+    fn test_config_deserialization_missing_optional_fields() {
+        // Only required fields; all serde(default) fields should get defaults
+        let json = r#"{
+            "model_type": "qwen3_next",
+            "hidden_size": 2048,
+            "num_hidden_layers": 48,
+            "intermediate_size": 5120,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "max_position_embeddings": 262144
+        }"#;
+        let args: Qwen3NextModelArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.rope_theta, 10000.0);
+        assert_eq!(args.partial_rotary_factor, 1.0);
+        assert_eq!(args.full_attention_interval, 4);
+        assert!(!args.tie_word_embeddings);
+        assert!(!args.attention_bias);
+        assert!(args.rope_scaling.is_none());
+        assert!(args.quantization.is_none());
+        assert_eq!(args.linear_num_value_heads, 0);
+        assert_eq!(args.linear_num_key_heads, 0);
+        assert_eq!(args.linear_key_head_dim, 0);
+        assert_eq!(args.linear_value_head_dim, 0);
+        assert_eq!(args.linear_conv_kernel_dim, 0);
+        assert_eq!(args.num_experts, 0);
+        assert_eq!(args.num_experts_per_tok, 0);
+        assert_eq!(args.decoder_sparse_step, 0);
+        assert!(!args.norm_topk_prob);
+        assert!(args.mlp_only_layers.is_empty());
+    }
+
+    #[test]
+    fn test_config_deserialization_quantization_null() {
+        let json = r#"{
+            "model_type": "qwen3_next",
+            "hidden_size": 2048,
+            "num_hidden_layers": 4,
+            "intermediate_size": 5120,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "max_position_embeddings": 262144,
+            "quantization": null
+        }"#;
+        let args: Qwen3NextModelArgs = serde_json::from_str(json).unwrap();
+        assert!(args.quantization.is_none());
+    }
+
+    #[test]
+    fn test_swiglu_numeric_correctness() {
+        // silu(x) = x * sigmoid(x)
+        // silu(0) = 0 * 0.5 = 0
+        // silu(1) = 1 * sigmoid(1) = 1 * 0.7310586 = 0.7310586
+        // silu(-1) = -1 * sigmoid(-1) = -1 * 0.2689414 = -0.2689414
+
+        // swiglu(gate, x) = silu(gate) * x
+
+        // gate=0, x=5 => silu(0) * 5 = 0
+        let gate = Array::from_slice(&[0.0_f32], &[1, 1]);
+        let x = Array::from_slice(&[5.0_f32], &[1, 1]);
+        let result = swiglu(&gate, &x).unwrap();
+        let val: f32 = result.item();
+        assert!((val - 0.0).abs() < 1e-6, "silu(0)*5 should be 0, got {val}");
+
+        // gate=1, x=1 => silu(1) * 1 = 0.7310586
+        let gate2 = Array::from_slice(&[1.0_f32], &[1, 1]);
+        let x2 = Array::from_slice(&[1.0_f32], &[1, 1]);
+        let result2 = swiglu(&gate2, &x2).unwrap();
+        let val2: f32 = result2.item();
+        assert!(
+            (val2 - 0.7310586).abs() < 1e-4,
+            "silu(1)*1 should be ~0.7311, got {val2}"
+        );
+
+        // gate=-1, x=2 => silu(-1) * 2 = -0.2689414 * 2 = -0.5378828
+        let gate3 = Array::from_slice(&[-1.0_f32], &[1, 1]);
+        let x3 = Array::from_slice(&[2.0_f32], &[1, 1]);
+        let result3 = swiglu(&gate3, &x3).unwrap();
+        let val3: f32 = result3.item();
+        assert!(
+            (val3 - (-0.5378828)).abs() < 1e-4,
+            "silu(-1)*2 should be ~-0.5379, got {val3}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_moe_happy_path_construction() {
+        let args = minimal_qwen3_next_args();
+        let result = SparseMoeBlock::new(&args, 64, 4);
+        assert!(result.is_ok());
+        let block = result.unwrap();
+        assert_eq!(block.top_k, args.num_experts_per_tok);
+        assert!(block.norm_topk_prob);
+    }
+
+    #[test]
+    fn test_causal_lm_valid_construction() {
+        let args = valid_causal_lm_args();
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_ok());
+        let model = result.unwrap();
+        assert_eq!(model.args.model_type, "qwen3_next");
+    }
+
+    #[test]
+    fn test_causal_lm_make_cache_layer_types() {
+        let args = valid_causal_lm_args();
+        let model = Qwen3NextCausalLM::new(args).unwrap();
+        let cache = model.make_cache();
+        // 4 layers, full_attention_interval=4, so layers 0,1,2 are linear, layer 3 is full attention
+        assert_eq!(cache.len(), 4);
+        for (i, layer_cache) in cache.iter().enumerate() {
+            let lc = layer_cache.as_ref().unwrap();
+            let is_linear = (i + 1) % 4 != 0;
+            if is_linear {
+                assert!(
+                    matches!(lc, LayerCache::Arrays(_)),
+                    "Layer {i} should be Arrays (linear)"
+                );
+            } else {
+                assert!(
+                    matches!(lc, LayerCache::KV(_)),
+                    "Layer {i} should be KV (full attention)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_causal_lm_negative_full_attention_interval() {
+        let mut args = valid_causal_lm_args();
+        args.full_attention_interval = -1;
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_causal_lm_with_quantization() {
+        let mut args = valid_causal_lm_args();
+        args.quantization = Some(QuantizationConfig {
+            group_size: 32,
+            bits: 8,
+        });
+        let result = Qwen3NextCausalLM::new(args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_causal_lm_with_tied_embeddings() {
+        let mut args = valid_causal_lm_args();
+        args.tie_word_embeddings = true;
+        let model = Qwen3NextCausalLM::new(args).unwrap();
+        assert!(model.lm_head.is_none());
+    }
+
+    #[test]
+    fn test_causal_lm_without_tied_embeddings() {
+        let mut args = valid_causal_lm_args();
+        args.tie_word_embeddings = false;
+        let model = Qwen3NextCausalLM::new(args).unwrap();
+        assert!(model.lm_head.is_some());
+    }
+
+    #[test]
+    fn test_load_model_args_happy_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = r#"{
+            "model_type": "qwen3_next",
+            "hidden_size": 2048,
+            "num_hidden_layers": 4,
+            "intermediate_size": 5120,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "head_dim": 256,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "max_position_embeddings": 262144
+        }"#;
+        std::fs::write(dir.path().join("config.json"), config).unwrap();
+        let args = load_model_args(dir.path()).unwrap();
+        assert_eq!(args.model_type, "qwen3_next");
+        assert_eq!(args.hidden_size, 2048);
+    }
+
+    #[test]
+    fn test_load_model_args_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_model_args(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_model_args_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "{{bad json").unwrap();
+        let result = load_model_args(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_arrays_cache_default() {
+        let cache = ArraysCache::default();
+        assert!(cache.conv_state.is_none());
+        assert!(cache.ssm_state.is_none());
+        assert_eq!(cache.offset, 0);
+    }
+
+    #[test]
+    fn test_gated_delta_step_with_nonzero_state() {
+        // Verify that state is accumulated correctly across steps
+        let q = Array::ones::<f32>(&[1, 2, 4]).unwrap();
+        let k = Array::ones::<f32>(&[1, 2, 4]).unwrap();
+        let v = Array::ones::<f32>(&[1, 2, 3]).unwrap();
+        let g = Array::ones::<f32>(&[1, 2]).unwrap();
+        let beta = mlx_rs::ops::broadcast_to(Array::from_f32(0.5), &[1, 2]).unwrap();
+        let state = Array::zeros::<f32>(&[1, 2, 3, 4]).unwrap();
+
+        let (_, state1) = gated_delta_step(&q, &k, &v, &g, &beta, &state).unwrap();
+        let (y2, state2) = gated_delta_step(&q, &k, &v, &g, &beta, &state1).unwrap();
+
+        // State should be different after two steps
+        assert_eq!(state2.shape(), &[1, 2, 3, 4]);
+        assert_eq!(y2.shape(), &[1, 2, 3]);
+    }
 }
