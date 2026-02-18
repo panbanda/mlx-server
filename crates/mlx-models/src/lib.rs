@@ -96,29 +96,86 @@ pub fn load_safetensors_weights<M: ModuleParametersExt>(
     model: &mut M,
     model_path: &Path,
 ) -> Result<(), ModelError> {
+    load_quantized_safetensors_weights(model, model_path, false)
+}
+
+/// Load safetensors weights with optional name remapping for quantized models.
+///
+/// Pre-quantized MLX models store weights with flat names (e.g., `q_proj.weight`)
+/// but the Rust quantized types use a nested structure (`q_proj.inner.weight`).
+/// When `quantized` is true, keys ending in `.weight` or `.bias` (but not
+/// `.biases`) that don't match directly are retried with `.inner.` inserted.
+pub fn load_quantized_safetensors_weights<M: ModuleParametersExt>(
+    model: &mut M,
+    model_path: &Path,
+    quantized: bool,
+) -> Result<(), ModelError> {
+    let safetensors_files = collect_safetensors_files(model_path)?;
+
+    let mut params = model.parameters_mut().flatten();
+
+    for file_path in &safetensors_files {
+        tracing::debug!(file = %file_path.display(), "Loading weights");
+        let loaded = Array::load_safetensors(file_path)
+            .map_err(|e| ModelError::Io(std::io::Error::other(e.to_string())))?;
+
+        for (key, value) in loaded {
+            if let Some(param) = params.get_mut(&*key) {
+                **param = value;
+            } else if quantized {
+                // Remap: "a.b.weight" -> "a.b.inner.weight", "a.b.bias" -> "a.b.inner.bias"
+                if let Some(remapped) = remap_quantized_key(&key) {
+                    if let Some(param) = params.get_mut(&*remapped) {
+                        **param = value;
+                    }
+                }
+            }
+        }
+    }
+
+    model
+        .eval()
+        .map_err(|e| ModelError::Io(std::io::Error::other(e.to_string())))?;
+
+    Ok(())
+}
+
+/// Collect safetensors file paths from a model directory.
+fn collect_safetensors_files(model_path: &Path) -> Result<Vec<std::path::PathBuf>, ModelError> {
     let index_path = model_path.join("model.safetensors.index.json");
     if index_path.exists() {
         let json = std::fs::read_to_string(&index_path)?;
         let index: WeightMapIndex = serde_json::from_str(&json)?;
         let weight_files: HashSet<&String> = index.weight_map.values().collect();
-
-        for weight_file in weight_files {
-            let weights_path = model_path.join(weight_file);
-            tracing::debug!(file = %weight_file, "Loading weights");
-            model.load_safetensors(&weights_path)?;
-        }
+        Ok(weight_files
+            .into_iter()
+            .map(|f| model_path.join(f))
+            .collect())
     } else {
         let single_path = model_path.join("model.safetensors");
         if single_path.exists() {
-            model.load_safetensors(&single_path)?;
+            Ok(vec![single_path])
         } else {
-            return Err(ModelError::MissingWeight(
+            Err(ModelError::MissingWeight(
                 "No safetensors files found".to_owned(),
-            ));
+            ))
         }
     }
+}
 
-    Ok(())
+/// Remap a safetensors key for quantized model parameter names.
+///
+/// MLX Python saves quantized weights as `layer.weight` but Rust mlx-rs
+/// QuantizedLinear/QuantizedEmbedding nest them as `layer.inner.weight`.
+fn remap_quantized_key(key: &str) -> Option<String> {
+    if let Some(prefix) = key.strip_suffix(".weight") {
+        Some(format!("{prefix}.inner.weight"))
+    } else if key.ends_with(".bias") && !key.ends_with(".biases") {
+        let prefix = key.strip_suffix(".bias")?;
+        Some(format!("{prefix}.inner.bias"))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -132,5 +189,79 @@ mod tests {
         let token = sample(&logits, 0.0, 1.0).unwrap();
         let val: u32 = token.item();
         assert_eq!(val, 1);
+    }
+
+    #[test]
+    fn sample_2d_input_returns_1d_shape() {
+        // 2D [1, V] input (correct decode loop usage after slicing)
+        let logits = Array::from_slice(&[0.1_f32, 0.9, 0.0], &[1, 3]);
+        let token = sample(&logits, 0.0, 1.0).unwrap();
+        assert_eq!(token.shape(), &[1], "sample on [1, V] must return [1]");
+    }
+
+    #[test]
+    fn sample_3d_input_returns_2d_shape() {
+        // 3D [1, 1, V] input (raw decode logits -- the bug)
+        // argmax on axis -1 of [1, 1, V] produces [1, 1], not [1].
+        // Callers must slice to 2D before calling sample to avoid
+        // dimension accumulation in the decode loop.
+        let logits = Array::from_slice(&[0.1_f32, 0.9, 0.0], &[1, 1, 3]);
+        let token = sample(&logits, 0.0, 1.0).unwrap();
+        assert_eq!(
+            token.shape(),
+            &[1, 1],
+            "sample on [1, 1, V] returns [1, 1] -- callers must slice first"
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_weight() {
+        assert_eq!(
+            remap_quantized_key("model.layers.0.self_attn.q_proj.weight"),
+            Some("model.layers.0.self_attn.q_proj.inner.weight".to_owned())
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_bias() {
+        assert_eq!(
+            remap_quantized_key("model.layers.0.self_attn.q_proj.bias"),
+            Some("model.layers.0.self_attn.q_proj.inner.bias".to_owned())
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_biases_not_remapped() {
+        // ".biases" is a quantization parameter, not a layer bias -- don't remap
+        assert_eq!(
+            remap_quantized_key("model.layers.0.self_attn.q_proj.biases"),
+            None
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_scales_not_remapped() {
+        assert_eq!(
+            remap_quantized_key("model.layers.0.self_attn.q_proj.scales"),
+            None
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_embed_tokens_weight() {
+        assert_eq!(
+            remap_quantized_key("model.embed_tokens.weight"),
+            Some("model.embed_tokens.inner.weight".to_owned())
+        );
+    }
+
+    #[test]
+    fn remap_quantized_key_norm_weight() {
+        // RmsNorm weight should still remap -- it will just not match any param
+        // and be silently skipped by the loader
+        assert_eq!(
+            remap_quantized_key("model.norm.weight"),
+            Some("model.norm.inner.weight".to_owned())
+        );
     }
 }

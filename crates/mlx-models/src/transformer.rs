@@ -26,6 +26,13 @@ fn default_rope_theta() -> f32 {
     10000.0
 }
 
+/// Quantization parameters from config.json.
+#[derive(Debug, Clone, Deserialize)]
+pub struct QuantizationConfig {
+    pub group_size: i32,
+    pub bits: i32,
+}
+
 /// Unified model configuration, deserialized from config.json.
 ///
 /// Architecture-specific fields use serde defaults so that configs from
@@ -53,6 +60,10 @@ pub struct ModelArgs {
     pub sliding_window: Option<i32>,
     #[serde(default)]
     pub rope_scaling: Option<serde_json::Value>,
+
+    // Quantization (present in pre-quantized MLX models)
+    #[serde(default)]
+    pub quantization: Option<QuantizationConfig>,
 }
 
 impl ModelArgs {
@@ -543,8 +554,26 @@ pub fn load_model(model_dir: impl AsRef<Path>) -> Result<Model, ModelError> {
         "Loading model"
     );
 
-    let mut model = Model::new(args)?;
-    crate::load_safetensors_weights(&mut model, model_path)?;
+    let quantization = args.quantization.clone();
+    let raw_model = Model::new(args)?;
+
+    // Pre-quantized models need the MaybeQuantized fields converted to
+    // Quantized variants before loading weights, so that the parameter
+    // names (inner.weight, scales, biases) match the safetensors keys.
+    let mut model = if let Some(ref qc) = quantization {
+        tracing::info!(
+            group_size = qc.group_size,
+            bits = qc.bits,
+            "Applying quantization structure"
+        );
+        mlx_rs::nn::quantize(raw_model, qc.group_size, qc.bits).map_err(|e| {
+            ModelError::ShapeMismatch(format!("Failed to quantize model structure: {e}"))
+        })?
+    } else {
+        raw_model
+    };
+
+    crate::load_quantized_safetensors_weights(&mut model, model_path, quantization.is_some())?;
 
     tracing::info!("Model loaded successfully");
     Ok(model)
@@ -760,5 +789,45 @@ mod tests {
         std::fs::write(dir.path().join("config.json"), "not json").unwrap();
         let result = load_model_args(dir.path());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_quantization_config_deserialization() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "hidden_size": 1536,
+            "num_hidden_layers": 28,
+            "intermediate_size": 8960,
+            "num_attention_heads": 12,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 32768,
+            "quantization": {
+                "group_size": 64,
+                "bits": 4
+            }
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let qc = args.quantization.unwrap();
+        assert_eq!(qc.group_size, 64);
+        assert_eq!(qc.bits, 4);
+    }
+
+    #[test]
+    fn test_no_quantization_config() {
+        let json = r#"{
+            "model_type": "llama",
+            "hidden_size": 4096,
+            "num_hidden_layers": 32,
+            "intermediate_size": 11008,
+            "num_attention_heads": 32,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 32000,
+            "num_key_value_heads": 32,
+            "max_position_embeddings": 4096
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert!(args.quantization.is_none());
     }
 }

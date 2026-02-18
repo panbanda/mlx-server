@@ -202,7 +202,8 @@ impl SimpleEngine {
             let decode_logits = model
                 .forward(&decode_input_array, None, &mut cache)
                 .map_err(EngineError::Mlx)?;
-            current_token = sample(&decode_logits, temperature, top_p).map_err(EngineError::Mlx)?;
+            current_token = sample(&decode_logits.index((.., -1, ..)), temperature, top_p)
+                .map_err(EngineError::Mlx)?;
 
             let token_id: u32 = current_token.item();
             tokens.push(token_id);
@@ -383,7 +384,8 @@ impl SimpleEngine {
             let decode_logits = model
                 .forward(&decode_input_array, None, &mut cache)
                 .map_err(EngineError::Mlx)?;
-            current_token = sample(&decode_logits, temperature, top_p).map_err(EngineError::Mlx)?;
+            current_token = sample(&decode_logits.index((.., -1, ..)), temperature, top_p)
+                .map_err(EngineError::Mlx)?;
 
             let token_id: u32 = current_token.item();
             all_tokens.push(token_id);
