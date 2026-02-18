@@ -49,7 +49,7 @@ Settings are resolved in order (later wins): defaults, environment variables, CL
 
 | CLI Flag | Env Variable | Default | Description |
 |---|---|---|---|
-| `--model` | `MLX_SERVER_MODEL` | `~/.cache/huggingface/hub` | Model directory or HF model ID |
+| `--model` | `MLX_SERVER_MODEL` | *(required)* | Path to local MLX model directory or HF model ID |
 | `--host` | `MLX_SERVER_HOST` | `0.0.0.0` | Bind address |
 | `--port` | `MLX_SERVER_PORT` | `8000` | Bind port |
 | `--max-tokens` | `MLX_SERVER_MAX_TOKENS` | `32768` | Default max generation tokens |
