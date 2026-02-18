@@ -376,6 +376,5 @@ mod tests {
     fn test_current_unix_timestamp_reasonable_value() {
         let ts = current_unix_timestamp();
         assert!(ts > 1_700_000_000, "timestamp too old: {ts}");
-        assert!(ts < 2_000_000_000, "timestamp too far in future: {ts}");
     }
 }

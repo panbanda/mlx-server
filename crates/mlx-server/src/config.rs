@@ -121,7 +121,18 @@ impl ServerConfig {
             figment = figment.merge(Serialized::default("timeout", timeout));
         }
 
-        figment.extract().map_err(Box::new)
+        let config: Self = figment.extract().map_err(Box::new)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), Box<figment::Error>> {
+        if self.timeout < 0.0 {
+            return Err(Box::new(figment::Error::from(
+                "timeout must not be negative".to_owned(),
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -210,9 +221,12 @@ mod tests {
     }
 
     #[test]
-    fn test_negative_timeout() {
-        let config = config_with("timeout", -1.0_f64);
-        assert!((config.timeout - (-1.0)).abs() < f64::EPSILON);
+    fn test_negative_timeout_rejected() {
+        let result: Result<ServerConfig, _> = test_figment()
+            .merge(Serialized::default("timeout", -1.0_f64))
+            .extract();
+        let config = result.unwrap();
+        assert!(config.validate().is_err());
     }
 
     #[test]

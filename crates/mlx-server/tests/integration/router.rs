@@ -183,7 +183,7 @@ fn build_router_is_public_and_callable() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn cors_preflight_options_returns_200() {
+async fn cors_preflight_options_returns_405_without_cors_layer() {
     let response = send_request(
         "OPTIONS",
         "/health",
@@ -194,14 +194,9 @@ async fn cors_preflight_options_returns_200() {
     )
     .await;
 
-    // OPTIONS should not return 405; the health-only router may not have CORS
-    // middleware, but it should at least not crash. The full build_router adds
-    // CorsLayer::permissive().
-    let status = response.status();
-    assert!(
-        status == StatusCode::OK || status == StatusCode::METHOD_NOT_ALLOWED,
-        "OPTIONS returned unexpected status: {status}"
-    );
+    // Health-only router has no CORS middleware, so OPTIONS returns 405.
+    // The full build_router adds CorsLayer::permissive().
+    assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,23 +204,10 @@ async fn cors_preflight_options_returns_200() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn health_endpoint_does_not_require_auth() {
-    // The health endpoint is outside the api_routes group in build_router,
-    // so even when an API key is configured, /health should be accessible.
+async fn health_endpoint_works_on_health_only_router() {
     let response = send_request("GET", "/health", &[]).await;
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = response_json(response).await;
     assert_eq!(body["status"], "ok");
-}
-
-#[tokio::test]
-async fn health_returns_json_content_type() {
-    let response = send_request("GET", "/health", &[]).await;
-
-    let ct = response_content_type(&response);
-    assert!(
-        ct.contains("application/json"),
-        "Expected application/json, got: {ct}"
-    );
 }

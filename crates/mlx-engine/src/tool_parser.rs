@@ -302,7 +302,8 @@ After last."#;
         // The parser finds the first <tool_call>, then looks for first </tool_call>.
         // Content between them: "\n<tool_call>\n{\"name\": \"inner\", \"arguments\": {}}\n"
         // This is not valid JSON (starts with <tool_call>), so it's preserved as raw text.
-        assert!(result.tool_calls.is_empty() || result.tool_calls.len() <= 1);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
     }
 
     #[test]
