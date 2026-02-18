@@ -302,6 +302,7 @@ mod tests {
     fn test_generate_request_id_format() {
         let id = generate_request_id();
         assert!(id.starts_with("chatcmpl-"));
+        assert!(id.len() > "chatcmpl-".len());
     }
 
     #[test]
@@ -363,13 +364,6 @@ mod tests {
             assert!(ids.insert(id), "duplicate request ID generated");
         }
         assert_eq!(ids.len(), 100);
-    }
-
-    #[test]
-    fn test_generate_request_id_prefix() {
-        let id = generate_request_id();
-        assert!(id.starts_with("chatcmpl-"));
-        assert!(id.len() > "chatcmpl-".len());
     }
 
     #[test]

@@ -113,21 +113,13 @@ jobs:
             --all-features \
             --workspace \
             --fail-under-lines 80 \
-            -- --test-threads=1
-
-      - name: Generate LCOV report
-        if: always()
-        run: |
-          cargo llvm-cov \
-            --all-features \
-            --workspace \
             --lcov \
             --output-path lcov.info \
             -- --test-threads=1
 
       - name: Upload LCOV report
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: success() || failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-lcov
           path: lcov.info

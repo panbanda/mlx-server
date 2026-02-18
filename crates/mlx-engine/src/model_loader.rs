@@ -5,6 +5,7 @@ use mlx_models::{AnyModel, load_tokenizer as shared_load_tokenizer, registry, tr
 use crate::error::EngineError;
 
 /// Configuration for loading a model from a directory.
+#[derive(Debug)]
 pub struct ModelConfig {
     pub model_dir: PathBuf,
     pub model_type: String,
@@ -58,6 +59,7 @@ pub fn load_tokenizer(model_dir: impl AsRef<Path>) -> Result<tokenizers::Tokeniz
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use mlx_models::error::ModelError;
 
     /// Create a temp dir with a config.json containing the given model_type and
     /// return the ModelConfig result.
@@ -125,19 +127,25 @@ mod tests {
     #[test]
     fn model_config_from_dir_missing_config_json() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(ModelConfig::from_dir(dir.path()).is_err());
+        let err = ModelConfig::from_dir(dir.path()).unwrap_err();
+        assert!(matches!(err, EngineError::Model(ModelError::Io(_))));
     }
 
     #[test]
     fn model_config_from_dir_invalid_json() {
         let (_dir, result) = config_from_raw("not valid json {{{");
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(err, EngineError::Model(ModelError::Json(_))));
     }
 
     #[test]
     fn model_config_from_dir_missing_model_type_field() {
         let (_dir, result) = config_from_raw(r#"{"vocab_size": 32000, "hidden_size": 4096}"#);
-        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(matches!(
+            err,
+            EngineError::Model(ModelError::UnsupportedModel(_))
+        ));
     }
 
     #[test]

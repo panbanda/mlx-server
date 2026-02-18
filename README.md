@@ -108,7 +108,7 @@ curl http://localhost:8000/v1/chat/completions \
 
 ## Project Structure
 
-```
+```text
 crates/
   mlx-models/    Model architectures (transformer, qwen3_next) and weight loading
   mlx-engine/    Inference engine (tokenization, generation loop, prompt caching)
