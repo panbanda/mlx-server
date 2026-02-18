@@ -386,6 +386,12 @@ impl TransformerModel {
         if !args.vocab_size.is_positive() {
             return Err(Exception::custom("vocab_size must be positive"));
         }
+        if !args.num_hidden_layers.is_positive() {
+            return Err(Exception::custom("num_hidden_layers must be positive"));
+        }
+        if !args.num_key_value_heads.is_positive() {
+            return Err(Exception::custom("num_key_value_heads must be positive"));
+        }
 
         Ok(Self {
             vocab_size: args.vocab_size,

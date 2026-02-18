@@ -149,9 +149,9 @@ mod tests {
     }
 
     #[test]
-    fn test_config_from_env_vars() {
-        // figment Env provider with MLX_SERVER_ prefix and _ splitting
-        // e.g. MLX_SERVER_PORT=9000 -> port = 9000
+    fn test_config_layered_override() {
+        // Verifies that later figment layers override earlier ones,
+        // which is the same mechanism used by Env::prefixed("MLX_SERVER_").
         let figment = Figment::new()
             .merge(Serialized::defaults(ServerConfig::default()))
             .merge(Serialized::default("port", 9000_u16))

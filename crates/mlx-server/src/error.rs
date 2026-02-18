@@ -47,11 +47,14 @@ impl IntoResponse for ServerError {
                 "invalid_request_error",
                 msg.clone(),
             ),
-            ServerError::InternalError(msg) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "server_error",
-                msg.clone(),
-            ),
+            ServerError::InternalError(msg) => {
+                tracing::error!(error = %msg, "Internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "server_error",
+                    "Internal server error".to_owned(),
+                )
+            }
         };
 
         let body = Json(ErrorResponse {
@@ -114,13 +117,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_internal_error_returns_500_with_actual_message() {
+    async fn test_internal_error_returns_500_with_masked_message() {
         let error = ServerError::InternalError("disk full".to_owned());
         let resp = error.into_response();
         let (status, body) = response_status_and_body(resp).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body["error"]["message"].as_str().unwrap(), "disk full");
+        let message = body["error"]["message"].as_str().unwrap();
+        assert_eq!(message, "Internal server error");
+        assert!(!message.contains("disk full"));
         assert_eq!(body["error"]["type"].as_str().unwrap(), "server_error");
     }
 

@@ -34,12 +34,17 @@ async fn bad_request_returns_400() {
 }
 
 #[tokio::test]
-async fn internal_error_returns_500_with_message() {
+async fn internal_error_returns_500_with_masked_message() {
     let error = ServerError::InternalError("database unreachable".to_owned());
     let (status, body, _) = extract_response(error).await;
 
     assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-    assert_eq!(body["error"]["message"], "database unreachable");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert_eq!(message, "Internal server error");
+    assert!(
+        !message.contains("database unreachable"),
+        "Internal error details leaked to client"
+    );
     assert_eq!(body["error"]["type"], "server_error");
 }
 

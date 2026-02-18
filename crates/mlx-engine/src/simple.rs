@@ -102,6 +102,17 @@ impl SimpleEngine {
         if prompt_tokens.is_empty() {
             return Err(EngineError::Generation("Prompt is empty".to_owned()));
         }
+        if max_tokens == 0 {
+            return Ok(GenerationOutput {
+                text: String::new(),
+                finish_reason: "length".to_owned(),
+                prompt_tokens: prompt_tokens
+                    .len()
+                    .try_into()
+                    .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?,
+                completion_tokens: 0,
+            });
+        }
         let prompt_len: u32 = prompt_tokens
             .len()
             .try_into()
@@ -275,6 +286,20 @@ impl SimpleEngine {
     ) -> Result<(), EngineError> {
         if prompt_tokens.is_empty() {
             return Err(EngineError::Generation("Prompt is empty".to_owned()));
+        }
+        if max_tokens == 0 {
+            let prompt_len: u32 = prompt_tokens
+                .len()
+                .try_into()
+                .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?;
+            let _ = sender.blocking_send(StreamingOutput {
+                new_text: String::new(),
+                finished: true,
+                finish_reason: Some("length".to_owned()),
+                prompt_tokens: prompt_len,
+                completion_tokens: 0,
+            });
+            return Ok(());
         }
         let prompt_len: u32 = prompt_tokens
             .len()

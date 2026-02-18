@@ -133,6 +133,11 @@ fn chat_completions_stream(
     state: SharedState,
     req: ChatCompletionRequest,
 ) -> Result<impl Stream<Item = Result<Event, Infallible>>, ServerError> {
+    if req.tools.is_some() {
+        return Err(ServerError::BadRequest(
+            "Streaming with tool_calls is not yet supported".to_owned(),
+        ));
+    }
     let max_tokens = req.max_tokens.unwrap_or(state.config.max_tokens);
     let temperature = req.temperature.unwrap_or(1.0);
     let top_p = req.top_p.unwrap_or(1.0);
