@@ -101,9 +101,25 @@ fn tojson_filter(value: Value) -> Result<String, minijinja::Error> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_simple_chatml_template() {
-        let template = r#"{%- for message in messages %}
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_owned(),
+            content: content.to_owned(),
+            tool_calls: None,
+        }
+    }
+
+    /// Create a minijinja environment with the tojson filter and return the
+    /// compiled template for `{{ value | tojson }}`.
+    fn tojson_env(template_source: &str) -> minijinja::Environment<'static> {
+        let mut env = Environment::new();
+        env.add_filter("tojson", tojson_filter);
+        env.add_template_owned("test".to_owned(), template_source.to_owned())
+            .unwrap();
+        env
+    }
+
+    const CHATML_TEMPLATE: &str = r#"{%- for message in messages %}
 <|im_start|>{{ message.role }}
 {{ message.content }}<|im_end|>
 {%- endfor %}
@@ -111,19 +127,12 @@ mod tests {
 <|im_start|>assistant
 {%- endif %}"#;
 
-        let renderer = ChatTemplateRenderer::new(template).unwrap();
-        let messages = vec![
-            ChatMessage {
-                role: "system".to_owned(),
-                content: "You are helpful.".to_owned(),
-                tool_calls: None,
-            },
-            ChatMessage {
-                role: "user".to_owned(),
-                content: "Hello!".to_owned(),
-                tool_calls: None,
-            },
-        ];
+    const TOJSON_TEMPLATE: &str = r#"{{ value | tojson }}"#;
+
+    #[test]
+    fn test_simple_chatml_template() {
+        let renderer = ChatTemplateRenderer::new(CHATML_TEMPLATE).unwrap();
+        let messages = vec![msg("system", "You are helpful."), msg("user", "Hello!")];
 
         let result = renderer.apply(&messages, None, true).unwrap();
         assert!(result.contains("<|im_start|>system"));
@@ -135,11 +144,7 @@ mod tests {
 
     #[test]
     fn test_tojson_filter() {
-        let template = r#"{{ value | tojson }}"#;
-        let mut env = Environment::new();
-        env.add_filter("tojson", tojson_filter);
-        env.add_template_owned("test".to_owned(), template.to_owned())
-            .unwrap();
+        let env = tojson_env(TOJSON_TEMPLATE);
         let tmpl = env.get_template("test").unwrap();
         let result = tmpl
             .render(minijinja::context! { value => "hello" })
@@ -149,28 +154,15 @@ mod tests {
 
     #[test]
     fn test_invalid_template_syntax_returns_error() {
-        let result = ChatTemplateRenderer::new("{%- invalid syntax %}}}");
-        assert!(result.is_err());
+        assert!(ChatTemplateRenderer::new("{%- invalid syntax %}}}").is_err());
     }
 
     #[test]
     fn test_apply_without_generation_prompt() {
-        let template = r#"{%- for message in messages %}
-<|im_start|>{{ message.role }}
-{{ message.content }}<|im_end|>
-{%- endfor %}
-{%- if add_generation_prompt %}
-<|im_start|>assistant
-{%- endif %}"#;
-
-        let renderer = ChatTemplateRenderer::new(template).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "Hello!".to_owned(),
-            tool_calls: None,
-        }];
-
-        let result = renderer.apply(&messages, None, false).unwrap();
+        let renderer = ChatTemplateRenderer::new(CHATML_TEMPLATE).unwrap();
+        let result = renderer
+            .apply(&[msg("user", "Hello!")], None, false)
+            .unwrap();
         assert!(!result.contains("<|im_start|>assistant"));
     }
 
@@ -180,7 +172,6 @@ mod tests {
 <|im_start|>{{ message.role }}
 {{ message.content }}<|im_end|>
 {%- endfor %}"#;
-
         let renderer = ChatTemplateRenderer::new(template).unwrap();
         let result = renderer.apply(&[], None, false).unwrap();
         assert!(!result.contains("<|im_start|>"));
@@ -196,22 +187,17 @@ TOOLS:{{ tools | length }}
 {%- endif %}"#;
 
         let renderer = ChatTemplateRenderer::new(template).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "Hi".to_owned(),
-            tool_calls: None,
-        }];
         let tools = vec![serde_json::json!({"type": "function", "function": {"name": "test"}})];
-
-        let result = renderer.apply(&messages, Some(&tools), false).unwrap();
+        let result = renderer
+            .apply(&[msg("user", "Hi")], Some(&tools), false)
+            .unwrap();
         assert!(result.contains("TOOLS:1"));
     }
 
     #[test]
     fn test_from_model_dir_no_template_returns_error() {
         let dir = tempfile::tempdir().unwrap();
-        let result = ChatTemplateRenderer::from_model_dir(dir.path());
-        assert!(result.is_err());
+        assert!(ChatTemplateRenderer::from_model_dir(dir.path()).is_err());
     }
 
     #[test]
@@ -222,29 +208,27 @@ TOOLS:{{ tools | length }}
             r#"{"model_type": "qwen2"}"#,
         )
         .unwrap();
-        let result = ChatTemplateRenderer::from_model_dir(dir.path());
-        assert!(result.is_err());
+        assert!(ChatTemplateRenderer::from_model_dir(dir.path()).is_err());
     }
 
     #[test]
     fn test_from_model_dir_standalone_jinja_file() {
         let dir = tempfile::tempdir().unwrap();
-        let template = r#"{%- for message in messages %}{{ message.content }}{%- endfor %}"#;
-        std::fs::write(dir.path().join("chat_template.jinja"), template).unwrap();
+        std::fs::write(
+            dir.path().join("chat_template.jinja"),
+            r#"{%- for message in messages %}{{ message.content }}{%- endfor %}"#,
+        )
+        .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "hello".to_owned(),
-            tool_calls: None,
-        }];
-        let result = renderer.apply(&messages, None, false).unwrap();
+        let result = renderer
+            .apply(&[msg("user", "hello")], None, false)
+            .unwrap();
         assert_eq!(result, "hello");
     }
 
     #[test]
     fn test_from_model_dir_jinja_takes_priority_over_tokenizer_config() {
         let dir = tempfile::tempdir().unwrap();
-        // Write both files -- jinja should win
         std::fs::write(
             dir.path().join("chat_template.jinja"),
             "JINJA:{{ messages[0].content }}",
@@ -256,31 +240,22 @@ TOOLS:{{ tools | length }}
         )
         .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "test".to_owned(),
-            tool_calls: None,
-        }];
-        let result = renderer.apply(&messages, None, false).unwrap();
+        let result = renderer.apply(&[msg("user", "test")], None, false).unwrap();
         assert!(result.starts_with("JINJA:"));
     }
 
     #[test]
     fn test_from_model_dir_fallback_to_tokenizer_config() {
         let dir = tempfile::tempdir().unwrap();
-        // No .jinja file, only tokenizer_config.json
         std::fs::write(
             dir.path().join("tokenizer_config.json"),
             r#"{"chat_template": "{%- for message in messages %}{{ message.content }}{%- endfor %}"}"#,
         )
         .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "from_config".to_owned(),
-            tool_calls: None,
-        }];
-        let result = renderer.apply(&messages, None, false).unwrap();
+        let result = renderer
+            .apply(&[msg("user", "from_config")], None, false)
+            .unwrap();
         assert_eq!(result, "from_config");
     }
 
@@ -292,8 +267,7 @@ TOOLS:{{ tools | length }}
             "this is not valid json {{{",
         )
         .unwrap();
-        let result = ChatTemplateRenderer::from_model_dir(dir.path());
-        match result {
+        match ChatTemplateRenderer::from_model_dir(dir.path()) {
             Err(e) => assert!(e.to_string().contains("Invalid JSON")),
             Ok(_) => panic!("Expected error for malformed JSON"),
         }
@@ -303,18 +277,7 @@ TOOLS:{{ tools | length }}
     fn test_apply_with_assistant_role() {
         let template = r#"{%- for message in messages %}<|{{ message.role }}|>{{ message.content }}{%- endfor %}"#;
         let renderer = ChatTemplateRenderer::new(template).unwrap();
-        let messages = vec![
-            ChatMessage {
-                role: "user".to_owned(),
-                content: "What is 2+2?".to_owned(),
-                tool_calls: None,
-            },
-            ChatMessage {
-                role: "assistant".to_owned(),
-                content: "4".to_owned(),
-                tool_calls: None,
-            },
-        ];
+        let messages = vec![msg("user", "What is 2+2?"), msg("assistant", "4")];
         let result = renderer.apply(&messages, None, false).unwrap();
         assert!(result.contains("<|assistant|>4"));
     }
@@ -338,17 +301,12 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_tojson_filter_with_nested_objects() {
-        let template = r#"{{ value | tojson }}"#;
-        let mut env = Environment::new();
-        env.add_filter("tojson", tojson_filter);
-        env.add_template_owned("test".to_owned(), template.to_owned())
-            .unwrap();
+        let env = tojson_env(TOJSON_TEMPLATE);
         let tmpl = env.get_template("test").unwrap();
         let nested = serde_json::json!({"a": {"b": [1, 2, 3]}});
         let result = tmpl
             .render(minijinja::context! { value => nested })
             .unwrap();
-        // The result should be valid JSON containing the nested structure
         let reparsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert_eq!(
             reparsed.get("a").unwrap().get("b").unwrap(),
@@ -358,11 +316,7 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_tojson_filter_with_arrays() {
-        let template = r#"{{ value | tojson }}"#;
-        let mut env = Environment::new();
-        env.add_filter("tojson", tojson_filter);
-        env.add_template_owned("test".to_owned(), template.to_owned())
-            .unwrap();
+        let env = tojson_env(TOJSON_TEMPLATE);
         let tmpl = env.get_template("test").unwrap();
         let result = tmpl
             .render(minijinja::context! { value => vec![1, 2, 3] })
@@ -373,16 +327,11 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_tojson_filter_with_special_characters() {
-        let template = r#"{{ value | tojson }}"#;
-        let mut env = Environment::new();
-        env.add_filter("tojson", tojson_filter);
-        env.add_template_owned("test".to_owned(), template.to_owned())
-            .unwrap();
+        let env = tojson_env(TOJSON_TEMPLATE);
         let tmpl = env.get_template("test").unwrap();
         let result = tmpl
             .render(minijinja::context! { value => "quotes: \"hello\" and backslash: \\" })
             .unwrap();
-        // Should be valid JSON string with escaping
         let reparsed: String = serde_json::from_str(&result).unwrap();
         assert!(reparsed.contains("quotes: \"hello\""));
         assert!(reparsed.contains("backslash: \\"));
@@ -390,15 +339,8 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_template_rendering_error_undefined_variable() {
-        // Template references a variable that won't be provided
-        let template = r#"{{ undefined_variable.nested_field }}"#;
-        let renderer = ChatTemplateRenderer::new(template).unwrap();
-        let messages = vec![ChatMessage {
-            role: "user".to_owned(),
-            content: "hi".to_owned(),
-            tool_calls: None,
-        }];
-        let result = renderer.apply(&messages, None, false);
-        assert!(result.is_err());
+        let renderer =
+            ChatTemplateRenderer::new(r#"{{ undefined_variable.nested_field }}"#).unwrap();
+        assert!(renderer.apply(&[msg("user", "hi")], None, false).is_err());
     }
 }

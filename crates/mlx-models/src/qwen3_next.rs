@@ -109,6 +109,27 @@ pub struct Qwen3NextModelArgs {
 // Quantized weight containers
 // ---------------------------------------------------------------------------
 
+type QuantizedParams = (Param<Array>, Param<Array>, Param<Array>);
+
+fn init_quantized_params() -> Result<QuantizedParams, Exception> {
+    Ok((
+        Param::new(Array::zeros::<f32>(&[1])?),
+        Param::new(Array::zeros::<f32>(&[1])?),
+        Param::new(Array::zeros::<f32>(&[1])?),
+    ))
+}
+
+fn quantized_forward(
+    x: &Array,
+    weight: &Array,
+    scales: &Array,
+    biases: &Array,
+    group_size: i32,
+    bits: i32,
+) -> Result<Array, Exception> {
+    ops::quantized_matmul(x, weight, scales, biases, true, group_size, bits)
+}
+
 /// Quantized linear layer stored as raw weight/scales/biases arrays.
 /// Forward uses `quantized_matmul` directly.
 #[derive(Debug, Clone, ModuleParameters)]
@@ -125,22 +146,22 @@ struct QLinear {
 
 impl QLinear {
     fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
+        let (weight, scales, biases) = init_quantized_params()?;
         Ok(Self {
-            weight: Param::new(Array::zeros::<f32>(&[1])?),
-            scales: Param::new(Array::zeros::<f32>(&[1])?),
-            biases: Param::new(Array::zeros::<f32>(&[1])?),
+            weight,
+            scales,
+            biases,
             group_size,
             bits,
         })
     }
 
     fn forward(&self, x: &Array) -> Result<Array, Exception> {
-        ops::quantized_matmul(
+        quantized_forward(
             x,
-            &*self.weight,
-            &*self.scales,
-            &*self.biases,
-            true,
+            &self.weight,
+            &self.scales,
+            &self.biases,
             self.group_size,
             self.bits,
         )
@@ -162,10 +183,11 @@ struct QEmbedding {
 
 impl QEmbedding {
     fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
+        let (weight, scales, biases) = init_quantized_params()?;
         Ok(Self {
-            weight: Param::new(Array::zeros::<f32>(&[1])?),
-            scales: Param::new(Array::zeros::<f32>(&[1])?),
-            biases: Param::new(Array::zeros::<f32>(&[1])?),
+            weight,
+            scales,
+            biases,
             group_size,
             bits,
         })
@@ -183,12 +205,11 @@ impl QEmbedding {
     }
 
     fn as_linear(&self, x: &Array) -> Result<Array, Exception> {
-        ops::quantized_matmul(
+        quantized_forward(
             x,
-            &*self.weight,
-            &*self.scales,
-            &*self.biases,
-            true,
+            &self.weight,
+            &self.scales,
+            &self.biases,
             self.group_size,
             self.bits,
         )
@@ -344,12 +365,21 @@ struct Qwen3NextMLP {
     up_proj: QLinear,
 }
 
+fn new_mlp_projections(ql: i32, qb: i32) -> Result<(QLinear, QLinear, QLinear), Exception> {
+    Ok((
+        QLinear::new(ql, qb)?,
+        QLinear::new(ql, qb)?,
+        QLinear::new(ql, qb)?,
+    ))
+}
+
 impl Qwen3NextMLP {
     fn new(ql: i32, qb: i32) -> Result<Self, Exception> {
+        let (gate_proj, down_proj, up_proj) = new_mlp_projections(ql, qb)?;
         Ok(Self {
-            gate_proj: QLinear::new(ql, qb)?,
-            down_proj: QLinear::new(ql, qb)?,
-            up_proj: QLinear::new(ql, qb)?,
+            gate_proj,
+            down_proj,
+            up_proj,
         })
     }
 
@@ -377,10 +407,11 @@ struct SwitchMlpWeights {
 
 impl SwitchMlpWeights {
     fn new(ql: i32, qb: i32) -> Result<Self, Exception> {
+        let (gate_proj, down_proj, up_proj) = new_mlp_projections(ql, qb)?;
         Ok(Self {
-            gate_proj: QLinear::new(ql, qb)?,
-            up_proj: QLinear::new(ql, qb)?,
-            down_proj: QLinear::new(ql, qb)?,
+            gate_proj,
+            up_proj,
+            down_proj,
         })
     }
 
@@ -1253,15 +1284,12 @@ mod tests {
 
     #[test]
     fn test_sparse_moe_rejects_top_k_exceeding_num_experts() {
-        let mut args = minimal_qwen3_next_args();
-        args.num_experts = 4;
-        args.num_experts_per_tok = 8; // top_k > num_experts
-        let result = SparseMoeBlock::new(&args, 64, 4);
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("num_experts_per_tok"),
-            "Expected error about num_experts_per_tok, got: {msg}"
+        assert_sparse_moe_rejects(
+            |a| {
+                a.num_experts = 4;
+                a.num_experts_per_tok = 8;
+            },
+            "num_experts_per_tok",
         );
     }
 
@@ -1274,30 +1302,29 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_sparse_moe_rejects_zero_num_experts() {
+    fn assert_sparse_moe_rejects(
+        mutate: impl FnOnce(&mut Qwen3NextModelArgs),
+        expected_substring: &str,
+    ) {
         let mut args = minimal_qwen3_next_args();
-        args.num_experts = 0;
+        mutate(&mut args);
         let result = SparseMoeBlock::new(&args, 64, 4);
-        assert!(result.is_err(), "Should reject num_experts == 0");
+        assert!(result.is_err(), "Should reject invalid args");
         let msg = result.unwrap_err().to_string();
         assert!(
-            msg.contains("num_experts"),
-            "Expected error about num_experts, got: {msg}"
+            msg.contains(expected_substring),
+            "Expected error about {expected_substring}, got: {msg}"
         );
     }
 
     #[test]
+    fn test_sparse_moe_rejects_zero_num_experts() {
+        assert_sparse_moe_rejects(|a| a.num_experts = 0, "num_experts");
+    }
+
+    #[test]
     fn test_sparse_moe_rejects_zero_num_experts_per_tok() {
-        let mut args = minimal_qwen3_next_args();
-        args.num_experts_per_tok = 0;
-        let result = SparseMoeBlock::new(&args, 64, 4);
-        assert!(result.is_err(), "Should reject num_experts_per_tok == 0");
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("num_experts_per_tok"),
-            "Expected error about num_experts_per_tok, got: {msg}"
-        );
+        assert_sparse_moe_rejects(|a| a.num_experts_per_tok = 0, "num_experts_per_tok");
     }
 
     /// Minimal args for tests that only care about MoE fields.

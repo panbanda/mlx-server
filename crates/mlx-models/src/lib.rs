@@ -226,35 +226,36 @@ fn remap_quantized_key(key: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn assert_sample_shape(
+        logit_data: &[f32],
+        logit_shape: &[i32],
+        temp: f32,
+        top_p: f32,
+        expected_shape: &[i32],
+    ) -> Array {
+        let logits = Array::from_slice(logit_data, logit_shape);
+        let token = sample(&logits, temp, top_p).unwrap();
+        assert_eq!(token.shape(), expected_shape);
+        token
+    }
+
     #[test]
     fn test_sample_greedy() {
-        let logits = Array::from_slice(&[0.1_f32, 0.9, 0.0], &[1, 3]);
-        let token = sample(&logits, 0.0, 1.0).unwrap();
+        let token = assert_sample_shape(&[0.1_f32, 0.9, 0.0], &[1, 3], 0.0, 1.0, &[1]);
         let val: u32 = token.item();
         assert_eq!(val, 1);
     }
 
     #[test]
     fn sample_2d_input_returns_1d_shape() {
-        // 2D [1, V] input (correct decode loop usage after slicing)
-        let logits = Array::from_slice(&[0.1_f32, 0.9, 0.0], &[1, 3]);
-        let token = sample(&logits, 0.0, 1.0).unwrap();
-        assert_eq!(token.shape(), &[1], "sample on [1, V] must return [1]");
+        assert_sample_shape(&[0.1_f32, 0.9, 0.0], &[1, 3], 0.0, 1.0, &[1]);
     }
 
     #[test]
     fn sample_3d_input_returns_2d_shape() {
-        // 3D [1, 1, V] input (raw decode logits -- the bug)
         // argmax on axis -1 of [1, 1, V] produces [1, 1], not [1].
-        // Callers must slice to 2D before calling sample to avoid
-        // dimension accumulation in the decode loop.
-        let logits = Array::from_slice(&[0.1_f32, 0.9, 0.0], &[1, 1, 3]);
-        let token = sample(&logits, 0.0, 1.0).unwrap();
-        assert_eq!(
-            token.shape(),
-            &[1, 1],
-            "sample on [1, 1, V] returns [1, 1] -- callers must slice first"
-        );
+        // Callers must slice to 2D before calling sample.
+        assert_sample_shape(&[0.1_f32, 0.9, 0.0], &[1, 1, 3], 0.0, 1.0, &[1, 1]);
     }
 
     #[test]
@@ -310,56 +311,36 @@ mod tests {
 
     #[test]
     fn sample_with_temperature() {
-        let logits = Array::from_slice(&[0.1_f32, 100.0, 0.0], &[1, 3]);
-        // With high temperature the distribution is flatter, but the peak is so dominant
-        // that sampling should still mostly return index 1
-        let token = sample(&logits, 0.5, 1.0).unwrap();
-        // Just verify it produces a valid token index
-        let shape = token.shape();
-        assert_eq!(shape, &[1]);
+        assert_sample_shape(&[0.1_f32, 100.0, 0.0], &[1, 3], 0.5, 1.0, &[1]);
     }
 
     #[test]
     fn sample_with_top_p() {
-        // Strong peak at index 1; top_p=0.5 should still mostly select it
-        let logits = Array::from_slice(&[0.0_f32, 100.0, 0.0], &[1, 3]);
-        let token = sample(&logits, 1.0, 0.5).unwrap();
-        let shape = token.shape();
-        assert_eq!(shape, &[1]);
+        assert_sample_shape(&[0.0_f32, 100.0, 0.0], &[1, 3], 1.0, 0.5, &[1]);
     }
 
     #[test]
     fn sample_single_element_logits() {
-        let logits = Array::from_slice(&[5.0_f32], &[1, 1]);
-        let token = sample(&logits, 0.0, 1.0).unwrap();
+        let token = assert_sample_shape(&[5.0_f32], &[1, 1], 0.0, 1.0, &[1]);
         let val: u32 = token.item();
         assert_eq!(val, 0, "Single-element logits must return index 0");
     }
 
     #[test]
     fn sample_uniform_logits_greedy() {
-        // All equal logits -- argmax should return index 0 (first max)
-        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
-        let token = sample(&logits, 0.0, 1.0).unwrap();
+        let token = assert_sample_shape(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4], 0.0, 1.0, &[1]);
         let val: u32 = token.item();
         assert_eq!(val, 0, "Tied logits should return first index via argmax");
     }
 
     #[test]
     fn sample_uniform_logits_with_temperature() {
-        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
-        let token = sample(&logits, 1.0, 1.0).unwrap();
-        let shape = token.shape();
-        assert_eq!(shape, &[1]);
-        // Any index 0..3 is valid
+        assert_sample_shape(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4], 1.0, 1.0, &[1]);
     }
 
     #[test]
     fn sample_top_p_with_uniform_logits() {
-        let logits = Array::from_slice(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4]);
-        let token = sample(&logits, 1.0, 0.3).unwrap();
-        let shape = token.shape();
-        assert_eq!(shape, &[1]);
+        assert_sample_shape(&[1.0_f32, 1.0, 1.0, 1.0], &[1, 4], 1.0, 0.3, &[1]);
     }
 
     #[test]

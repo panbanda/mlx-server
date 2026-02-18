@@ -256,21 +256,40 @@ fn current_unix_timestamp() -> i64 {
 mod tests {
     use super::*;
 
+    fn simple_message(role: &str, content: Option<&str>) -> ChatCompletionMessage {
+        ChatCompletionMessage {
+            role: role.to_owned(),
+            content: content.map(str::to_owned),
+            tool_calls: None,
+            tool_call_id: None,
+        }
+    }
+
+    fn tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+        ToolCall {
+            id: id.to_owned(),
+            r#type: "function".to_owned(),
+            function: ToolCallFunction {
+                name: name.to_owned(),
+                arguments: arguments.to_owned(),
+            },
+        }
+    }
+
+    fn tool_message(role: &str, calls: Vec<ToolCall>) -> ChatCompletionMessage {
+        ChatCompletionMessage {
+            role: role.to_owned(),
+            content: None,
+            tool_calls: Some(calls),
+            tool_call_id: None,
+        }
+    }
+
     #[test]
     fn test_convert_messages() {
         let msgs = vec![
-            ChatCompletionMessage {
-                role: "user".to_owned(),
-                content: Some("Hello".to_owned()),
-                tool_calls: None,
-                tool_call_id: None,
-            },
-            ChatCompletionMessage {
-                role: "assistant".to_owned(),
-                content: None,
-                tool_calls: None,
-                tool_call_id: None,
-            },
+            simple_message("user", Some("Hello")),
+            simple_message("assistant", None),
         ];
         let converted = convert_messages(&msgs);
         assert_eq!(converted.len(), 2);
@@ -287,24 +306,16 @@ mod tests {
 
     #[test]
     fn test_convert_messages_with_tool_calls() {
-        let msgs = vec![ChatCompletionMessage {
-            role: "assistant".to_owned(),
-            content: None,
-            tool_calls: Some(vec![ToolCall {
-                id: "call_1".to_owned(),
-                r#type: "function".to_owned(),
-                function: ToolCallFunction {
-                    name: "get_weather".to_owned(),
-                    arguments: r#"{"city":"NYC"}"#.to_owned(),
-                },
-            }]),
-            tool_call_id: None,
-        }];
+        let msgs = vec![tool_message(
+            "assistant",
+            vec![tool_call("call_1", "get_weather", r#"{"city":"NYC"}"#)],
+        )];
         let converted = convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
-        let tool_calls = converted.first().and_then(|m| m.tool_calls.as_ref());
-        assert!(tool_calls.is_some());
-        let calls = tool_calls.unwrap();
+        let calls = converted
+            .first()
+            .and_then(|m| m.tool_calls.as_ref())
+            .unwrap();
         assert_eq!(calls.len(), 1);
     }
 
@@ -316,12 +327,7 @@ mod tests {
 
     #[test]
     fn test_convert_messages_with_null_content() {
-        let msgs = vec![ChatCompletionMessage {
-            role: "assistant".to_owned(),
-            content: None,
-            tool_calls: None,
-            tool_call_id: None,
-        }];
+        let msgs = vec![simple_message("assistant", None)];
         let converted = convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
         assert_eq!(converted.first().map(|m| m.content.as_str()), Some(""));
@@ -329,37 +335,24 @@ mod tests {
 
     #[test]
     fn test_convert_messages_with_tool_calls_complex_arguments() {
-        let msgs = vec![ChatCompletionMessage {
-            role: "assistant".to_owned(),
-            content: None,
-            tool_calls: Some(vec![
-                ToolCall {
-                    id: "call_1".to_owned(),
-                    r#type: "function".to_owned(),
-                    function: ToolCallFunction {
-                        name: "search".to_owned(),
-                        arguments: r#"{"query":"rust programming","filters":{"language":"en","year":2024}}"#
-                            .to_owned(),
-                    },
-                },
-                ToolCall {
-                    id: "call_2".to_owned(),
-                    r#type: "function".to_owned(),
-                    function: ToolCallFunction {
-                        name: "calculate".to_owned(),
-                        arguments: r#"{"expression":"2+2"}"#.to_owned(),
-                    },
-                },
-            ]),
-            tool_call_id: None,
-        }];
+        let msgs = vec![tool_message(
+            "assistant",
+            vec![
+                tool_call(
+                    "call_1",
+                    "search",
+                    r#"{"query":"rust programming","filters":{"language":"en","year":2024}}"#,
+                ),
+                tool_call("call_2", "calculate", r#"{"expression":"2+2"}"#),
+            ],
+        )];
         let converted = convert_messages(&msgs);
         assert_eq!(converted.len(), 1);
-        let tool_calls = converted
+        let calls = converted
             .first()
             .and_then(|m| m.tool_calls.as_ref())
             .unwrap();
-        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(calls.len(), 2);
     }
 
     #[test]

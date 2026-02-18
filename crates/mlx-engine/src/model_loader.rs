@@ -59,60 +59,63 @@ pub fn load_tokenizer(model_dir: impl AsRef<Path>) -> Result<tokenizers::Tokeniz
 mod tests {
     use super::*;
 
+    /// Create a temp dir with a config.json containing the given model_type and
+    /// return the ModelConfig result.
+    fn config_for_model(model_type: &str) -> (tempfile::TempDir, Result<ModelConfig, EngineError>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            format!(r#"{{"model_type": "{model_type}"}}"#),
+        )
+        .unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        (dir, result)
+    }
+
+    /// Write arbitrary content to config.json in a temp dir and return
+    /// the ModelConfig result.
+    fn config_from_raw(content: &str) -> (tempfile::TempDir, Result<ModelConfig, EngineError>) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), content).unwrap();
+        let result = ModelConfig::from_dir(dir.path());
+        (dir, result)
+    }
+
     #[test]
     fn model_config_from_dir_qwen2() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen2"}"#).unwrap();
-        let config = ModelConfig::from_dir(dir.path()).unwrap();
+        let (dir, result) = config_for_model("qwen2");
+        let config = result.unwrap();
         assert_eq!(config.model_type, "qwen2");
         assert_eq!(config.model_dir, dir.path());
     }
 
     #[test]
     fn model_config_from_dir_qwen3() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen3"}"#).unwrap();
-        let config = ModelConfig::from_dir(dir.path()).unwrap();
-        assert_eq!(config.model_type, "qwen3");
+        let (_dir, result) = config_for_model("qwen3");
+        assert_eq!(result.unwrap().model_type, "qwen3");
     }
 
     #[test]
     fn model_config_from_dir_llama() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "llama"}"#).unwrap();
-        let config = ModelConfig::from_dir(dir.path()).unwrap();
-        assert_eq!(config.model_type, "llama");
+        let (_dir, result) = config_for_model("llama");
+        assert_eq!(result.unwrap().model_type, "llama");
     }
 
     #[test]
     fn model_config_from_dir_mistral() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"model_type": "mistral"}"#,
-        )
-        .unwrap();
-        let config = ModelConfig::from_dir(dir.path()).unwrap();
-        assert_eq!(config.model_type, "mistral");
+        let (_dir, result) = config_for_model("mistral");
+        assert_eq!(result.unwrap().model_type, "mistral");
     }
 
     #[test]
     fn model_config_from_dir_qwen3_next() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"model_type": "qwen3_next"}"#,
-        )
-        .unwrap();
-        let config = ModelConfig::from_dir(dir.path()).unwrap();
-        assert_eq!(config.model_type, "qwen3_next");
+        let (_dir, result) = config_for_model("qwen3_next");
+        assert_eq!(result.unwrap().model_type, "qwen3_next");
     }
 
     #[test]
     fn model_config_from_dir_unsupported_model_type() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "gpt2"}"#).unwrap();
-        let result = ModelConfig::from_dir(dir.path());
+        let (_dir, result) = config_for_model("gpt2");
         match result {
             Err(e) => assert!(e.to_string().contains("gpt2")),
             Ok(_) => panic!("Expected error for unsupported model type"),
@@ -122,35 +125,25 @@ mod tests {
     #[test]
     fn model_config_from_dir_missing_config_json() {
         let dir = tempfile::tempdir().unwrap();
-        let result = ModelConfig::from_dir(dir.path());
-        assert!(result.is_err());
+        assert!(ModelConfig::from_dir(dir.path()).is_err());
     }
 
     #[test]
     fn model_config_from_dir_invalid_json() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), "not valid json {{{").unwrap();
-        let result = ModelConfig::from_dir(dir.path());
+        let (_dir, result) = config_from_raw("not valid json {{{");
         assert!(result.is_err());
     }
 
     #[test]
     fn model_config_from_dir_missing_model_type_field() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"vocab_size": 32000, "hidden_size": 4096}"#,
-        )
-        .unwrap();
-        let result = ModelConfig::from_dir(dir.path());
+        let (_dir, result) = config_from_raw(r#"{"vocab_size": 32000, "hidden_size": 4096}"#);
         assert!(result.is_err());
     }
 
     #[test]
     fn load_tokenizer_missing_tokenizer_json() {
         let dir = tempfile::tempdir().unwrap();
-        let result = load_tokenizer(dir.path());
-        match result {
+        match load_tokenizer(dir.path()) {
             Err(e) => assert!(e.to_string().contains("Tokenization error")),
             Ok(_) => panic!("Expected error for missing tokenizer.json"),
         }

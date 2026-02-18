@@ -18,6 +18,68 @@ use mlx_server::types::openai::{
     EmbeddingUsage, ModelList, ModelObject, ToolCall, ToolCallFunction,
 };
 
+fn make_usage(prompt: u32, completion: u32) -> CompletionUsage {
+    CompletionUsage {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+    }
+}
+
+fn make_anthropic_usage(input: u32, output: u32) -> AnthropicUsage {
+    AnthropicUsage {
+        input_tokens: input,
+        output_tokens: output,
+    }
+}
+
+fn make_chat_chunk(
+    id: &str,
+    delta: ChatCompletionDelta,
+    finish_reason: Option<String>,
+) -> ChatCompletionChunk {
+    ChatCompletionChunk {
+        id: id.to_owned(),
+        object: "chat.completion.chunk",
+        created: 1700000000,
+        model: "test".to_owned(),
+        choices: vec![ChatCompletionChunkChoice {
+            index: 0,
+            delta,
+            finish_reason,
+        }],
+    }
+}
+
+fn make_empty_delta_chunk(id: &str, finish_reason: Option<String>) -> ChatCompletionChunk {
+    make_chat_chunk(
+        id,
+        ChatCompletionDelta {
+            role: None,
+            content: None,
+            tool_calls: None,
+        },
+        finish_reason,
+    )
+}
+
+fn make_tool_call(id: &str, name: &str, arguments: &str) -> ToolCall {
+    ToolCall {
+        id: id.to_owned(),
+        r#type: "function".to_owned(),
+        function: ToolCallFunction {
+            name: name.to_owned(),
+            arguments: arguments.to_owned(),
+        },
+    }
+}
+
+fn assert_event_type(event: &impl serde::Serialize, expected_type: &str) -> serde_json::Value {
+    let json: serde_json::Value = serde_json::to_value(event).unwrap();
+    assert_eq!(json["type"], expected_type);
+    json
+}
+
 // ---------------------------------------------------------------------------
 // OpenAI Chat Completion response
 // ---------------------------------------------------------------------------
@@ -39,11 +101,7 @@ fn chat_completion_response_has_required_fields() {
             },
             finish_reason: "stop".to_owned(),
         }],
-        usage: CompletionUsage {
-            prompt_tokens: 10,
-            completion_tokens: 5,
-            total_tokens: 15,
-        },
+        usage: make_usage(10, 5),
     };
 
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
@@ -81,14 +139,11 @@ fn chat_completion_response_includes_tool_calls() {
     let msg = ChatCompletionMessage {
         role: "assistant".to_owned(),
         content: None,
-        tool_calls: Some(vec![ToolCall {
-            id: "call_001".to_owned(),
-            r#type: "function".to_owned(),
-            function: ToolCallFunction {
-                name: "get_weather".to_owned(),
-                arguments: r#"{"city":"London"}"#.to_owned(),
-            },
-        }]),
+        tool_calls: Some(vec![make_tool_call(
+            "call_001",
+            "get_weather",
+            r#"{"city":"London"}"#,
+        )]),
         tool_call_id: None,
     };
     let json: serde_json::Value = serde_json::to_value(&msg).unwrap();
@@ -106,21 +161,15 @@ fn chat_completion_response_includes_tool_calls() {
 
 #[test]
 fn chat_chunk_has_correct_object_type() {
-    let chunk = ChatCompletionChunk {
-        id: "chatcmpl-abc".to_owned(),
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "test".to_owned(),
-        choices: vec![ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatCompletionDelta {
-                role: Some("assistant".to_owned()),
-                content: None,
-                tool_calls: None,
-            },
-            finish_reason: None,
-        }],
-    };
+    let chunk = make_chat_chunk(
+        "chatcmpl-abc",
+        ChatCompletionDelta {
+            role: Some("assistant".to_owned()),
+            content: None,
+            tool_calls: None,
+        },
+        None,
+    );
     let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
 
     assert_eq!(json["object"], "chat.completion.chunk");
@@ -130,21 +179,15 @@ fn chat_chunk_has_correct_object_type() {
 
 #[test]
 fn chat_chunk_content_delta() {
-    let chunk = ChatCompletionChunk {
-        id: "chatcmpl-abc".to_owned(),
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "test".to_owned(),
-        choices: vec![ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatCompletionDelta {
-                role: None,
-                content: Some("Hello".to_owned()),
-                tool_calls: None,
-            },
-            finish_reason: None,
-        }],
-    };
+    let chunk = make_chat_chunk(
+        "chatcmpl-abc",
+        ChatCompletionDelta {
+            role: None,
+            content: Some("Hello".to_owned()),
+            tool_calls: None,
+        },
+        None,
+    );
     let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
 
     assert_eq!(json["choices"][0]["delta"]["content"], "Hello");
@@ -154,21 +197,7 @@ fn chat_chunk_content_delta() {
 
 #[test]
 fn chat_chunk_finish_reason() {
-    let chunk = ChatCompletionChunk {
-        id: "chatcmpl-abc".to_owned(),
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "test".to_owned(),
-        choices: vec![ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatCompletionDelta {
-                role: None,
-                content: None,
-                tool_calls: None,
-            },
-            finish_reason: Some("stop".to_owned()),
-        }],
-    };
+    let chunk = make_empty_delta_chunk("chatcmpl-abc", Some("stop".to_owned()));
     let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
     assert_eq!(json["choices"][0]["finish_reason"], "stop");
 }
@@ -189,11 +218,7 @@ fn completion_response_has_required_fields() {
             text: "once upon a time".to_owned(),
             finish_reason: "stop".to_owned(),
         }],
-        usage: CompletionUsage {
-            prompt_tokens: 3,
-            completion_tokens: 4,
-            total_tokens: 7,
-        },
+        usage: make_usage(3, 4),
     };
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
 
@@ -292,10 +317,7 @@ fn anthropic_response_has_type_field() {
         }],
         model: "claude-3".to_owned(),
         stop_reason: Some("end_turn".to_owned()),
-        usage: AnthropicUsage {
-            input_tokens: 10,
-            output_tokens: 5,
-        },
+        usage: make_anthropic_usage(10, 5),
     };
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
 
@@ -331,15 +353,10 @@ fn anthropic_message_start_event() {
             content: vec![],
             model: "claude-3".to_owned(),
             stop_reason: None,
-            usage: AnthropicUsage {
-                input_tokens: 10,
-                output_tokens: 0,
-            },
+            usage: make_anthropic_usage(10, 0),
         },
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-
-    assert_eq!(json["type"], "message_start");
+    let json = assert_event_type(&event, "message_start");
     assert_eq!(json["message"]["type"], "message");
     assert_eq!(json["message"]["role"], "assistant");
     assert!(json["message"]["content"].as_array().unwrap().is_empty());
@@ -356,9 +373,7 @@ fn anthropic_content_block_start_event() {
             text: String::new(),
         },
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-
-    assert_eq!(json["type"], "content_block_start");
+    let json = assert_event_type(&event, "content_block_start");
     assert_eq!(json["index"], 0);
     assert_eq!(json["content_block"]["type"], "text");
     assert_eq!(json["content_block"]["text"], "");
@@ -374,9 +389,7 @@ fn anthropic_content_block_delta_event() {
             text: "Hello".to_owned(),
         },
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-
-    assert_eq!(json["type"], "content_block_delta");
+    let json = assert_event_type(&event, "content_block_delta");
     assert_eq!(json["delta"]["type"], "text_delta");
     assert_eq!(json["delta"]["text"], "Hello");
 }
@@ -387,9 +400,7 @@ fn anthropic_content_block_stop_event() {
         event_type: "content_block_stop",
         index: 0,
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-
-    assert_eq!(json["type"], "content_block_stop");
+    let json = assert_event_type(&event, "content_block_stop");
     assert_eq!(json["index"], 0);
 }
 
@@ -400,14 +411,9 @@ fn anthropic_message_delta_event() {
         delta: MessageDelta {
             stop_reason: Some("end_turn".to_owned()),
         },
-        usage: AnthropicUsage {
-            input_tokens: 10,
-            output_tokens: 25,
-        },
+        usage: make_anthropic_usage(10, 25),
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-
-    assert_eq!(json["type"], "message_delta");
+    let json = assert_event_type(&event, "message_delta");
     assert_eq!(json["delta"]["stop_reason"], "end_turn");
     assert_eq!(json["usage"]["output_tokens"], 25);
 }
@@ -417,8 +423,7 @@ fn anthropic_message_stop_event() {
     let event = MessageStopEvent {
         event_type: "message_stop",
     };
-    let json: serde_json::Value = serde_json::to_value(&event).unwrap();
-    assert_eq!(json["type"], "message_stop");
+    assert_event_type(&event, "message_stop");
 }
 
 // ---------------------------------------------------------------------------
@@ -427,21 +432,15 @@ fn anthropic_message_stop_event() {
 
 #[test]
 fn chat_chunk_serializes_as_valid_sse_data() {
-    let chunk = ChatCompletionChunk {
-        id: "chatcmpl-test".to_owned(),
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "test".to_owned(),
-        choices: vec![ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatCompletionDelta {
-                role: None,
-                content: Some("word".to_owned()),
-                tool_calls: None,
-            },
-            finish_reason: None,
-        }],
-    };
+    let chunk = make_chat_chunk(
+        "chatcmpl-test",
+        ChatCompletionDelta {
+            role: None,
+            content: Some("word".to_owned()),
+            tool_calls: None,
+        },
+        None,
+    );
 
     let json_str = serde_json::to_string(&chunk).unwrap();
     // Verify it's valid JSON (can be parsed back)
@@ -493,32 +492,14 @@ fn chat_completion_response_with_tool_calls_in_choices() {
                 role: "assistant".to_owned(),
                 content: None,
                 tool_calls: Some(vec![
-                    ToolCall {
-                        id: "call_1".to_owned(),
-                        r#type: "function".to_owned(),
-                        function: ToolCallFunction {
-                            name: "get_weather".to_owned(),
-                            arguments: r#"{"city":"London"}"#.to_owned(),
-                        },
-                    },
-                    ToolCall {
-                        id: "call_2".to_owned(),
-                        r#type: "function".to_owned(),
-                        function: ToolCallFunction {
-                            name: "get_time".to_owned(),
-                            arguments: r#"{"timezone":"UTC"}"#.to_owned(),
-                        },
-                    },
+                    make_tool_call("call_1", "get_weather", r#"{"city":"London"}"#),
+                    make_tool_call("call_2", "get_time", r#"{"timezone":"UTC"}"#),
                 ]),
                 tool_call_id: None,
             },
             finish_reason: "tool_calls".to_owned(),
         }],
-        usage: CompletionUsage {
-            prompt_tokens: 10,
-            completion_tokens: 20,
-            total_tokens: 30,
-        },
+        usage: make_usage(10, 20),
     };
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
 
@@ -556,11 +537,7 @@ fn completion_response_with_multiple_choices() {
                 finish_reason: "length".to_owned(),
             },
         ],
-        usage: CompletionUsage {
-            prompt_tokens: 5,
-            completion_tokens: 10,
-            total_tokens: 15,
-        },
+        usage: make_usage(5, 10),
     };
     let json: serde_json::Value = serde_json::to_value(&resp).unwrap();
 
@@ -578,25 +555,10 @@ fn completion_response_with_multiple_choices() {
 
 #[test]
 fn streaming_chunk_with_finish_reason_set() {
-    let chunk = ChatCompletionChunk {
-        id: "chatcmpl-final".to_owned(),
-        object: "chat.completion.chunk",
-        created: 1700000000,
-        model: "test".to_owned(),
-        choices: vec![ChatCompletionChunkChoice {
-            index: 0,
-            delta: ChatCompletionDelta {
-                role: None,
-                content: None,
-                tool_calls: None,
-            },
-            finish_reason: Some("stop".to_owned()),
-        }],
-    };
+    let chunk = make_empty_delta_chunk("chatcmpl-final", Some("stop".to_owned()));
     let json: serde_json::Value = serde_json::to_value(&chunk).unwrap();
 
     assert_eq!(json["choices"][0]["finish_reason"], "stop");
-    // Delta should be empty object when all fields are None
     let delta = &json["choices"][0]["delta"];
     assert!(delta.get("role").is_none());
     assert!(delta.get("content").is_none());

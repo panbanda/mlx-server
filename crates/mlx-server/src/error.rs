@@ -83,33 +83,40 @@ mod tests {
         (status, body)
     }
 
-    #[tokio::test]
-    async fn test_engine_error_returns_500_with_masked_message() {
-        let engine_err =
-            mlx_engine::error::EngineError::Generation("sensitive internal details".to_owned());
-        let error = ServerError::Engine(engine_err);
+    /// Asserts that the given error produces a 500 with a masked message
+    /// that does not contain `leaked_detail`.
+    async fn assert_masked_500(error: ServerError, leaked_detail: &str) {
         let resp = error.into_response();
         let (status, body) = response_status_and_body(resp).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
         let message = body["error"]["message"].as_str().unwrap();
         assert_eq!(message, "Internal server error");
-        // The actual engine error details must NOT leak
-        assert!(!message.contains("sensitive internal details"));
+        assert!(
+            !message.contains(leaked_detail),
+            "Internal error detail leaked: {leaked_detail}"
+        );
         assert_eq!(body["error"]["type"].as_str().unwrap(), "server_error");
     }
 
     #[tokio::test]
-    async fn test_bad_request_returns_400_with_actual_message() {
-        let error = ServerError::BadRequest("missing field: model".to_owned());
+    async fn test_engine_error_returns_500_with_masked_message() {
+        let engine_err =
+            mlx_engine::error::EngineError::Generation("sensitive internal details".to_owned());
+        assert_masked_500(
+            ServerError::Engine(engine_err),
+            "sensitive internal details",
+        )
+        .await;
+    }
+
+    async fn assert_bad_request(msg: &str) {
+        let error = ServerError::BadRequest(msg.to_owned());
         let resp = error.into_response();
         let (status, body) = response_status_and_body(resp).await;
 
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            body["error"]["message"].as_str().unwrap(),
-            "missing field: model"
-        );
+        assert_eq!(body["error"]["message"].as_str().unwrap(), msg);
         assert_eq!(
             body["error"]["type"].as_str().unwrap(),
             "invalid_request_error"
@@ -117,16 +124,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_internal_error_returns_500_with_masked_message() {
-        let error = ServerError::InternalError("disk full".to_owned());
-        let resp = error.into_response();
-        let (status, body) = response_status_and_body(resp).await;
+    async fn test_bad_request_returns_400_with_actual_message() {
+        assert_bad_request("missing field: model").await;
+    }
 
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        let message = body["error"]["message"].as_str().unwrap();
-        assert_eq!(message, "Internal server error");
-        assert!(!message.contains("disk full"));
-        assert_eq!(body["error"]["type"].as_str().unwrap(), "server_error");
+    #[tokio::test]
+    async fn test_internal_error_returns_500_with_masked_message() {
+        assert_masked_500(
+            ServerError::InternalError("disk full".to_owned()),
+            "disk full",
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -143,61 +151,30 @@ mod tests {
         let engine_err = mlx_engine::error::EngineError::Tokenization(
             "tokenizer failed on byte 0xFF".to_owned(),
         );
-        let error = ServerError::Engine(engine_err);
-        let resp = error.into_response();
-        let (status, body) = response_status_and_body(resp).await;
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        let message = body["error"]["message"].as_str().unwrap();
-        assert_eq!(message, "Internal server error");
-        assert!(!message.contains("0xFF"));
+        assert_masked_500(ServerError::Engine(engine_err), "0xFF").await;
     }
 
     #[tokio::test]
     async fn test_engine_template_error_masked() {
         let engine_err =
             mlx_engine::error::EngineError::Template("template parse failed".to_owned());
-        let error = ServerError::Engine(engine_err);
-        let resp = error.into_response();
-        let (status, body) = response_status_and_body(resp).await;
-
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        let message = body["error"]["message"].as_str().unwrap();
-        assert_eq!(message, "Internal server error");
-        assert!(!message.contains("template parse failed"));
+        assert_masked_500(ServerError::Engine(engine_err), "template parse failed").await;
     }
 
     #[tokio::test]
     async fn test_bad_request_with_empty_message() {
-        let error = ServerError::BadRequest(String::new());
-        let resp = error.into_response();
-        let (status, body) = response_status_and_body(resp).await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(body["error"]["message"].as_str().unwrap(), "");
-        assert_eq!(
-            body["error"]["type"].as_str().unwrap(),
-            "invalid_request_error"
-        );
+        assert_bad_request("").await;
     }
 
     #[tokio::test]
     async fn test_bad_request_with_very_long_message() {
         let long_msg = "x".repeat(2000);
-        let error = ServerError::BadRequest(long_msg.clone());
-        let resp = error.into_response();
-        let (status, body) = response_status_and_body(resp).await;
-
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        let message = body["error"]["message"].as_str().unwrap();
-        assert_eq!(message, long_msg);
-        assert_eq!(message.len(), 2000);
+        assert_bad_request(&long_msg).await;
     }
 
     #[tokio::test]
     async fn test_internal_error_with_empty_message_still_masked() {
-        let error = ServerError::InternalError(String::new());
-        let resp = error.into_response();
+        let resp = ServerError::InternalError(String::new()).into_response();
         let (status, body) = response_status_and_body(resp).await;
 
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);

@@ -590,6 +590,49 @@ pub fn load_model(model_dir: impl AsRef<Path>) -> Result<Model, ModelError> {
 mod tests {
     use super::*;
 
+    /// Create a `ModelArgs` with sensible defaults. Only fields that vary
+    /// between tests need to be overridden after construction.
+    fn default_model_args() -> ModelArgs {
+        ModelArgs {
+            model_type: "llama".to_owned(),
+            hidden_size: 256,
+            num_hidden_layers: 2,
+            intermediate_size: 512,
+            num_attention_heads: 4,
+            rms_norm_eps: 1e-6,
+            vocab_size: 1000,
+            num_key_value_heads: 2,
+            max_position_embeddings: 512,
+            rope_theta: 10000.0,
+            tie_word_embeddings: false,
+            use_sliding_window: false,
+            sliding_window: None,
+            rope_scaling: None,
+            quantization: None,
+        }
+    }
+
+    /// Create a `ModelArgs` with the given core parameters and defaults for
+    /// everything else.
+    fn make_model_args(
+        model_type: &str,
+        hidden_size: i32,
+        num_heads: i32,
+        num_kv_heads: i32,
+        vocab_size: i32,
+        num_layers: i32,
+    ) -> ModelArgs {
+        ModelArgs {
+            model_type: model_type.to_owned(),
+            hidden_size,
+            num_attention_heads: num_heads,
+            num_key_value_heads: num_kv_heads,
+            vocab_size,
+            num_hidden_layers: num_layers,
+            ..default_model_args()
+        }
+    }
+
     #[test]
     fn test_qwen2_config_deserialization() {
         let json = r#"{
@@ -609,15 +652,26 @@ mod tests {
             "sliding_window": 32768
         }"#;
 
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.model_type, "qwen2");
-        assert_eq!(args.hidden_size, 1536);
+        let args = assert_model_config(json, "qwen2", 1536, 128, true);
         assert_eq!(args.num_hidden_layers, 28);
         assert_eq!(args.num_attention_heads, 12);
         assert_eq!(args.num_key_value_heads, 2);
-        assert_eq!(args.head_dim(), 128);
         assert!(args.tie_word_embeddings);
-        assert!(args.qkv_bias());
+    }
+
+    fn assert_model_config(
+        json: &str,
+        expected_type: &str,
+        expected_hidden: i32,
+        expected_head_dim: i32,
+        expected_qkv_bias: bool,
+    ) -> ModelArgs {
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.model_type, expected_type);
+        assert_eq!(args.hidden_size, expected_hidden);
+        assert_eq!(args.head_dim(), expected_head_dim);
+        assert_eq!(args.qkv_bias(), expected_qkv_bias);
+        args
     }
 
     #[test]
@@ -637,16 +691,13 @@ mod tests {
             "tie_word_embeddings": false
         }"#;
 
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.model_type, "llama");
-        assert_eq!(args.hidden_size, 4096);
-        assert_eq!(args.head_dim(), 128);
+        let args = assert_model_config(json, "llama", 4096, 128, false);
         assert!(!args.tie_word_embeddings);
-        assert!(!args.qkv_bias());
     }
 
     #[test]
     fn test_llama_config_defaults() {
+        // Verify serde defaults when optional fields are omitted
         let json = r#"{
             "model_type": "llama",
             "hidden_size": 2048,
@@ -681,104 +732,38 @@ mod tests {
             "sliding_window": 4096
         }"#;
 
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.model_type, "mistral");
-        assert_eq!(args.hidden_size, 4096);
-        assert_eq!(args.head_dim(), 128);
+        let args = assert_model_config(json, "mistral", 4096, 128, false);
         assert_eq!(args.sliding_window, Some(4096));
-        assert!(!args.qkv_bias());
     }
 
     #[test]
     fn test_mistral_config_no_sliding_window() {
-        let json = r#"{
-            "model_type": "mistral",
-            "hidden_size": 2048,
-            "num_hidden_layers": 22,
-            "intermediate_size": 5632,
-            "num_attention_heads": 32,
-            "rms_norm_eps": 1e-05,
-            "vocab_size": 32000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 2048
-        }"#;
-
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("mistral", 2048, 32, 4, 32000, 22);
         assert!(args.sliding_window.is_none());
         assert_eq!(args.rope_theta, 10000.0);
     }
 
     #[test]
     fn test_head_dim_computation() {
-        let json = r#"{
-            "model_type": "qwen2",
-            "hidden_size": 768,
-            "num_hidden_layers": 12,
-            "intermediate_size": 2048,
-            "num_attention_heads": 12,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 4096,
-            "rope_theta": 10000.0
-        }"#;
-
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("qwen2", 768, 12, 4, 32000, 12);
         assert_eq!(args.head_dim(), 64);
     }
 
     #[test]
     fn test_checked_head_dim_zero_heads() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 768,
-            "num_hidden_layers": 12,
-            "intermediate_size": 2048,
-            "num_attention_heads": 0,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 4096,
-            "rope_theta": 10000.0
-        }"#;
-
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 768, 0, 4, 32000, 12);
         assert!(args.checked_head_dim().is_err());
     }
 
     #[test]
     fn test_checked_head_dim_not_divisible() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 100,
-            "num_hidden_layers": 12,
-            "intermediate_size": 2048,
-            "num_attention_heads": 3,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 1,
-            "max_position_embeddings": 4096,
-            "rope_theta": 10000.0
-        }"#;
-
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 100, 3, 1, 32000, 12);
         assert!(args.checked_head_dim().is_err());
     }
 
     #[test]
     fn test_qkv_bias_for_qwen3() {
-        let json = r#"{
-            "model_type": "qwen3",
-            "hidden_size": 2048,
-            "num_hidden_layers": 28,
-            "intermediate_size": 8960,
-            "num_attention_heads": 16,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 151936,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 32768
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("qwen3", 2048, 16, 2, 151936, 28);
         assert!(args.qkv_bias());
     }
 
@@ -799,22 +784,12 @@ mod tests {
 
     #[test]
     fn test_quantization_config_deserialization() {
-        let json = r#"{
-            "model_type": "qwen2",
-            "hidden_size": 1536,
-            "num_hidden_layers": 28,
-            "intermediate_size": 8960,
-            "num_attention_heads": 12,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 151936,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 32768,
-            "quantization": {
-                "group_size": 64,
-                "bits": 4
-            }
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let mut args = default_model_args();
+        args.model_type = "qwen2".to_owned();
+        args.quantization = Some(QuantizationConfig {
+            group_size: 64,
+            bits: 4,
+        });
         let qc = args.quantization.unwrap();
         assert_eq!(qc.group_size, 64);
         assert_eq!(qc.bits, 4);
@@ -822,36 +797,13 @@ mod tests {
 
     #[test]
     fn test_no_quantization_config() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 4096,
-            "num_hidden_layers": 32,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 32,
-            "max_position_embeddings": 4096
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 4096, 32, 32, 32000, 32);
         assert!(args.quantization.is_none());
     }
 
     #[test]
     fn test_model_args_missing_optional_fields_use_defaults() {
-        // Minimal config: only required fields
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 512,
-            "num_hidden_layers": 4,
-            "intermediate_size": 1024,
-            "num_attention_heads": 8,
-            "rms_norm_eps": 1e-05,
-            "vocab_size": 8000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 2048
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = default_model_args();
         assert_eq!(args.rope_theta, 10000.0);
         assert!(!args.tie_word_embeddings);
         assert!(!args.use_sliding_window);
@@ -863,253 +815,106 @@ mod tests {
     #[test]
     fn test_checked_head_dim_valid_cases() {
         // 768 / 12 = 64
-        let json = r#"{
-            "model_type": "qwen2",
-            "hidden_size": 768,
-            "num_hidden_layers": 12,
-            "intermediate_size": 2048,
-            "num_attention_heads": 12,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 4096
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("qwen2", 768, 12, 4, 32000, 12);
         assert_eq!(args.checked_head_dim().unwrap(), 64);
 
         // 4096 / 32 = 128
-        let json2 = r#"{
-            "model_type": "llama",
-            "hidden_size": 4096,
-            "num_hidden_layers": 32,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 32,
-            "max_position_embeddings": 4096
-        }"#;
-        let args2: ModelArgs = serde_json::from_str(json2).unwrap();
+        let args2 = make_model_args("llama", 4096, 32, 32, 32000, 32);
         assert_eq!(args2.checked_head_dim().unwrap(), 128);
 
         // 256 / 4 = 64
-        let json3 = r#"{
-            "model_type": "mistral",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512
-        }"#;
-        let args3: ModelArgs = serde_json::from_str(json3).unwrap();
+        let args3 = make_model_args("mistral", 256, 4, 2, 1000, 2);
         assert_eq!(args3.checked_head_dim().unwrap(), 64);
     }
 
     #[test]
     fn test_checked_head_dim_error_messages() {
         // Zero heads
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 768,
-            "num_hidden_layers": 12,
-            "intermediate_size": 2048,
-            "num_attention_heads": 0,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 4,
-            "max_position_embeddings": 4096
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 768, 0, 4, 32000, 12);
         let err = args.checked_head_dim().unwrap_err();
         assert!(err.to_string().contains("positive"));
 
         // Not divisible
-        let json2 = r#"{
-            "model_type": "llama",
-            "hidden_size": 100,
-            "num_hidden_layers": 2,
-            "intermediate_size": 256,
-            "num_attention_heads": 7,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 1,
-            "max_position_embeddings": 512
-        }"#;
-        let args2: ModelArgs = serde_json::from_str(json2).unwrap();
+        let args2 = make_model_args("llama", 100, 7, 1, 1000, 2);
         let err2 = args2.checked_head_dim().unwrap_err();
         assert!(err2.to_string().contains("divisible"));
     }
 
     #[test]
     fn test_model_new_zero_num_hidden_layers() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 256,
-            "num_hidden_layers": 0,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 256, 4, 2, 1000, 0);
         let result = Model::new(args);
         assert!(result.is_err(), "Should reject num_hidden_layers == 0");
     }
 
     #[test]
     fn test_model_new_zero_num_key_value_heads() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 0,
-            "max_position_embeddings": 512
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 256, 4, 0, 1000, 2);
         let result = Model::new(args);
         assert!(result.is_err(), "Should reject num_key_value_heads == 0");
     }
 
     #[test]
     fn test_model_new_zero_vocab_size() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 0,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 256, 4, 2, 0, 2);
         let result = Model::new(args);
         assert!(result.is_err(), "Should reject vocab_size == 0");
     }
 
     #[test]
     fn test_model_new_valid_with_tied_embeddings() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512,
-            "tie_word_embeddings": true
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let mut args = default_model_args();
+        args.tie_word_embeddings = true;
         let model = Model::new(args).unwrap();
         assert_eq!(model.model_type(), "llama");
-        // lm_head is None when tied
         assert!(model.lm_head.is_none());
     }
 
     #[test]
     fn test_model_new_valid_without_tied_embeddings() {
-        let json = r#"{
-            "model_type": "qwen2",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512,
-            "tie_word_embeddings": false
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("qwen2", 256, 4, 2, 1000, 2);
         let model = Model::new(args).unwrap();
         assert_eq!(model.model_type(), "qwen2");
         assert!(model.lm_head.is_some());
     }
 
+    /// Write a minimal config.json to a tempdir and return the directory.
+    fn write_model_config(model_type: &str) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let config = format!(
+            r#"{{"model_type":"{}","hidden_size":256,"num_hidden_layers":2,"intermediate_size":512,"num_attention_heads":4,"rms_norm_eps":1e-06,"vocab_size":1000,"num_key_value_heads":2,"max_position_embeddings":512}}"#,
+            model_type
+        );
+        std::fs::write(dir.path().join("config.json"), config).unwrap();
+        dir
+    }
+
+    fn assert_loaded_model_config(model_type: &str, expected_qkv_bias: bool) {
+        let dir = write_model_config(model_type);
+        let args = load_model_args(dir.path()).unwrap();
+        assert_eq!(args.model_type, model_type);
+        assert_eq!(args.qkv_bias(), expected_qkv_bias);
+    }
+
     #[test]
     fn test_load_model_args_valid_qwen3_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{
-            "model_type": "qwen3",
-            "hidden_size": 2048,
-            "num_hidden_layers": 28,
-            "intermediate_size": 8960,
-            "num_attention_heads": 16,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 151936,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 32768
-        }"#;
-        std::fs::write(dir.path().join("config.json"), config).unwrap();
-        let args = load_model_args(dir.path()).unwrap();
-        assert_eq!(args.model_type, "qwen3");
-        assert!(args.qkv_bias());
+        assert_loaded_model_config("qwen3", true);
     }
 
     #[test]
     fn test_load_model_args_valid_llama_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = r#"{
-            "model_type": "llama",
-            "hidden_size": 4096,
-            "num_hidden_layers": 32,
-            "intermediate_size": 11008,
-            "num_attention_heads": 32,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 32000,
-            "num_key_value_heads": 32,
-            "max_position_embeddings": 4096
-        }"#;
-        std::fs::write(dir.path().join("config.json"), config).unwrap();
-        let args = load_model_args(dir.path()).unwrap();
-        assert_eq!(args.model_type, "llama");
-        assert!(!args.qkv_bias());
+        assert_loaded_model_config("llama", false);
     }
 
     #[test]
     fn test_qkv_bias_for_unsupported_types() {
-        // model_type that is not qwen2/qwen3 should not have bias
-        let json = r#"{
-            "model_type": "custom_arch",
-            "hidden_size": 256,
-            "num_hidden_layers": 2,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("custom_arch", 256, 4, 2, 1000, 2);
         assert!(!args.qkv_bias());
     }
 
     #[test]
     fn test_model_new_negative_num_hidden_layers() {
-        let json = r#"{
-            "model_type": "llama",
-            "hidden_size": 256,
-            "num_hidden_layers": -1,
-            "intermediate_size": 512,
-            "num_attention_heads": 4,
-            "rms_norm_eps": 1e-06,
-            "vocab_size": 1000,
-            "num_key_value_heads": 2,
-            "max_position_embeddings": 512
-        }"#;
-        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        let args = make_model_args("llama", 256, 4, 2, 1000, -1);
         let result = Model::new(args);
         assert!(result.is_err(), "Should reject negative num_hidden_layers");
     }

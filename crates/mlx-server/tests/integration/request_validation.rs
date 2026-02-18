@@ -375,14 +375,18 @@ fn anthropic_finish_reason_mapping() {
     assert_eq!(openai_finish_to_anthropic_stop("unknown"), "unknown");
 }
 
+fn make_single_user_message() -> Vec<AnthropicMessage> {
+    vec![AnthropicMessage {
+        role: "user".to_owned(),
+        content: AnthropicContent::Text("hello".to_owned()),
+    }]
+}
+
 #[test]
 fn anthropic_messages_to_engine_without_system() {
     use mlx_server::anthropic_adapter::anthropic_messages_to_engine;
 
-    let messages = vec![AnthropicMessage {
-        role: "user".to_owned(),
-        content: AnthropicContent::Text("hello".to_owned()),
-    }];
+    let messages = make_single_user_message();
     let result = anthropic_messages_to_engine(&messages, None);
     assert_eq!(result.len(), 1);
     assert_eq!(result[0].role, "user");
@@ -393,10 +397,7 @@ fn anthropic_messages_to_engine_without_system() {
 fn anthropic_messages_to_engine_with_system() {
     use mlx_server::anthropic_adapter::anthropic_messages_to_engine;
 
-    let messages = vec![AnthropicMessage {
-        role: "user".to_owned(),
-        content: AnthropicContent::Text("hello".to_owned()),
-    }];
+    let messages = make_single_user_message();
     let result = anthropic_messages_to_engine(&messages, Some("be helpful"));
     assert_eq!(result.len(), 2);
     assert_eq!(result[0].role, "system");

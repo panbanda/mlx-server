@@ -272,6 +272,53 @@ pub struct EmbeddingUsage {
 mod tests {
     use super::*;
 
+    /// Deserialize a chat completion request from JSON with a single user message
+    /// and one extra field merged in (e.g., `"max_tokens": 0`).
+    fn chat_request_with(extra_field: &str) -> ChatCompletionRequest {
+        let json = format!(
+            r#"{{"model": "m", "messages": [{{"role": "user", "content": "hi"}}], {extra_field}}}"#,
+        );
+        serde_json::from_str(&json).unwrap()
+    }
+
+    fn make_chat_chunk(
+        id: &str,
+        delta: ChatCompletionDelta,
+        finish_reason: Option<String>,
+    ) -> ChatCompletionChunk {
+        ChatCompletionChunk {
+            id: id.to_owned(),
+            object: "chat.completion.chunk",
+            created: 1700000000,
+            model: "test".to_owned(),
+            choices: vec![ChatCompletionChunkChoice {
+                index: 0,
+                delta,
+                finish_reason,
+            }],
+        }
+    }
+
+    fn make_empty_delta_chunk(id: &str, finish_reason: Option<String>) -> ChatCompletionChunk {
+        make_chat_chunk(
+            id,
+            ChatCompletionDelta {
+                role: None,
+                content: None,
+                tool_calls: None,
+            },
+            finish_reason,
+        )
+    }
+
+    fn make_usage(prompt: u32, completion: u32) -> CompletionUsage {
+        CompletionUsage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+        }
+    }
+
     #[test]
     fn test_chat_request_minimal_deserialization() {
         let json = r#"{"model": "test", "messages": [{"role": "user", "content": "hi"}]}"#;
@@ -322,11 +369,7 @@ mod tests {
                 },
                 finish_reason: "stop".to_owned(),
             }],
-            usage: CompletionUsage {
-                prompt_tokens: 5,
-                completion_tokens: 1,
-                total_tokens: 6,
-            },
+            usage: make_usage(5, 1),
         };
         let json = serde_json::to_string(&resp).unwrap();
         assert!(json.contains("chat.completion"));
@@ -357,12 +400,7 @@ mod tests {
 
     #[test]
     fn test_response_format_json_mode() {
-        let json = r#"{
-            "model": "test",
-            "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {"type": "json_object"}
-        }"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(r#""response_format": {"type": "json_object"}"#);
         let fmt = req.response_format.unwrap();
         assert_eq!(fmt.r#type, "json_object");
         assert!(fmt.json_schema.is_none());
@@ -370,15 +408,9 @@ mod tests {
 
     #[test]
     fn test_response_format_json_schema() {
-        let json = r#"{
-            "model": "test",
-            "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"type": "object", "properties": {"name": {"type": "string"}}}
-            }
-        }"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(
+            r#""response_format": {"type": "json_schema", "json_schema": {"type": "object", "properties": {"name": {"type": "string"}}}}"#,
+        );
         let fmt = req.response_format.unwrap();
         assert_eq!(fmt.r#type, "json_schema");
         assert!(fmt.json_schema.is_some());
@@ -452,27 +484,20 @@ mod tests {
     }
 
     #[test]
-    fn test_stop_sequence_into_vec_single() {
-        let stop = StopSequence::Single("END".to_owned());
-        assert_eq!(stop.into_vec(), vec!["END"]);
+    fn test_stop_sequence_into_vec() {
+        let single = StopSequence::Single("END".to_owned());
+        assert_eq!(single.into_vec(), vec!["END"]);
+
+        let multiple = StopSequence::Multiple(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
+        assert_eq!(multiple.into_vec(), vec!["a", "b", "c"]);
     }
 
     #[test]
-    fn test_stop_sequence_into_vec_multiple() {
-        let stop = StopSequence::Multiple(vec!["a".to_owned(), "b".to_owned()]);
-        assert_eq!(stop.into_vec(), vec!["a", "b"]);
-    }
+    fn test_stop_sequence_extract() {
+        assert!(StopSequence::extract(None).is_empty());
 
-    #[test]
-    fn test_stop_sequence_extract_none() {
-        let result = StopSequence::extract(None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_stop_sequence_extract_some_single() {
-        let result = StopSequence::extract(Some(StopSequence::Single("x".to_owned())));
-        assert_eq!(result, vec!["x"]);
+        let single = StopSequence::extract(Some(StopSequence::Single("x".to_owned())));
+        assert_eq!(single, vec!["x"]);
     }
 
     #[test]
@@ -484,21 +509,15 @@ mod tests {
 
     #[test]
     fn test_chat_completion_chunk_serialization() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-123".to_owned(),
-            object: "chat.completion.chunk",
-            created: 1234567890,
-            model: "test".to_owned(),
-            choices: vec![ChatCompletionChunkChoice {
-                index: 0,
-                delta: ChatCompletionDelta {
-                    role: Some("assistant".to_owned()),
-                    content: Some("Hi".to_owned()),
-                    tool_calls: None,
-                },
-                finish_reason: None,
-            }],
-        };
+        let chunk = make_chat_chunk(
+            "chatcmpl-123",
+            ChatCompletionDelta {
+                role: Some("assistant".to_owned()),
+                content: Some("Hi".to_owned()),
+                tool_calls: None,
+            },
+            None,
+        );
         let json = serde_json::to_string(&chunk).unwrap();
         assert!(json.contains("chat.completion.chunk"));
     }
@@ -533,53 +552,26 @@ mod tests {
 
     #[test]
     fn test_chat_request_with_max_tokens_zero() {
-        let json =
-            r#"{"model": "m", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 0}"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(r#""max_tokens": 0"#);
         assert_eq!(req.max_tokens, Some(0));
     }
 
     #[test]
     fn test_chat_request_with_temperature_zero() {
-        let json = r#"{"model": "m", "messages": [{"role": "user", "content": "hi"}], "temperature": 0.0}"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(r#""temperature": 0.0"#);
         assert!((req.temperature.unwrap()).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_chat_request_with_top_p_zero() {
-        let json =
-            r#"{"model": "m", "messages": [{"role": "user", "content": "hi"}], "top_p": 0.0}"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(r#""top_p": 0.0"#);
         assert!((req.top_p.unwrap()).abs() < f32::EPSILON);
     }
 
     #[test]
     fn test_chat_request_with_top_p_one() {
-        let json =
-            r#"{"model": "m", "messages": [{"role": "user", "content": "hi"}], "top_p": 1.0}"#;
-        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        let req = chat_request_with(r#""top_p": 1.0"#);
         assert!((req.top_p.unwrap() - 1.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn test_stop_sequence_extract_returns_none_for_none() {
-        let result = StopSequence::extract(None);
-        assert!(result.is_empty());
-    }
-
-    #[test]
-    fn test_stop_sequence_into_vec_with_single_string() {
-        let stop = StopSequence::Single("END".to_owned());
-        let vec = stop.into_vec();
-        assert_eq!(vec, vec!["END"]);
-    }
-
-    #[test]
-    fn test_stop_sequence_into_vec_with_multiple_strings() {
-        let stop = StopSequence::Multiple(vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
-        let vec = stop.into_vec();
-        assert_eq!(vec, vec!["a", "b", "c"]);
     }
 
     #[test]
@@ -703,11 +695,7 @@ mod tests {
                 },
                 finish_reason: "tool_calls".to_owned(),
             }],
-            usage: CompletionUsage {
-                prompt_tokens: 10,
-                completion_tokens: 5,
-                total_tokens: 15,
-            },
+            usage: make_usage(10, 5),
         };
         let json_val: serde_json::Value = serde_json::to_value(&resp).unwrap();
         assert_eq!(json_val["choices"][0]["finish_reason"], "tool_calls");
@@ -717,21 +705,7 @@ mod tests {
 
     #[test]
     fn test_streaming_chunk_with_finish_reason() {
-        let chunk = ChatCompletionChunk {
-            id: "chatcmpl-fin".to_owned(),
-            object: "chat.completion.chunk",
-            created: 1700000000,
-            model: "test".to_owned(),
-            choices: vec![ChatCompletionChunkChoice {
-                index: 0,
-                delta: ChatCompletionDelta {
-                    role: None,
-                    content: None,
-                    tool_calls: None,
-                },
-                finish_reason: Some("stop".to_owned()),
-            }],
-        };
+        let chunk = make_empty_delta_chunk("chatcmpl-fin", Some("stop".to_owned()));
         let json_val: serde_json::Value = serde_json::to_value(&chunk).unwrap();
         assert_eq!(json_val["choices"][0]["finish_reason"], "stop");
     }

@@ -1,7 +1,7 @@
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
-use mlx_models::{AnyModel, sample};
+use mlx_models::{AnyCache, AnyModel, sample};
 use mlx_rs::{
     Array,
     ops::indexing::{IndexOp, NewAxis},
@@ -31,6 +31,36 @@ pub struct SimpleEngine {
     template: ChatTemplateRenderer,
     model_name: String,
     eos_token_ids: Vec<u32>,
+}
+
+/// Intermediate state after prefix cache lookup and model locking.
+struct PreparedGeneration<'a> {
+    model: MutexGuard<'a, AnyModel>,
+    cache: AnyCache,
+    prompt_array: Array,
+    prompt_len: u32,
+}
+
+/// Why generation terminated.
+enum FinishCondition {
+    Eos,
+    StopSequence(String),
+    MaxTokens,
+    None,
+}
+
+impl FinishCondition {
+    fn is_finished(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    fn reason_str(&self) -> Option<&'static str> {
+        match self {
+            Self::Eos | Self::StopSequence(_) => Some("stop"),
+            Self::MaxTokens => Some("length"),
+            Self::None => None,
+        }
+    }
 }
 
 impl SimpleEngine {
@@ -90,6 +120,143 @@ impl SimpleEngine {
         Ok(encoding.get_ids().to_vec())
     }
 
+    /// Convert prompt length to u32, returning a descriptive error on overflow.
+    fn prompt_len(prompt_tokens: &[u32]) -> Result<u32, EngineError> {
+        prompt_tokens
+            .len()
+            .try_into()
+            .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))
+    }
+
+    /// Look up the prefix cache, lock the model, and resolve the actual tokens
+    /// to feed into the forward pass.
+    fn prepare_generation(
+        &self,
+        prompt_tokens: &[u32],
+    ) -> Result<PreparedGeneration<'_>, EngineError> {
+        let prompt_len = Self::prompt_len(prompt_tokens)?;
+
+        let prefix_match = {
+            let mut pc = self
+                .prefix_cache
+                .lock()
+                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
+            pc.find_longest_prefix(prompt_tokens)
+        };
+
+        let model = self
+            .model
+            .lock()
+            .map_err(|e| EngineError::Generation(format!("Model lock poisoned: {e}")))?;
+
+        let (actual_prompt_tokens, cache) = if let Some(matched) = prefix_match {
+            tracing::debug!(
+                prefix_len = matched.prefix_len,
+                total_len = prompt_tokens.len(),
+                "Reusing cached prefix"
+            );
+            let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
+            if suffix.is_empty() {
+                (prompt_tokens.to_vec(), model.make_cache())
+            } else {
+                (suffix.to_vec(), matched.cache)
+            }
+        } else {
+            (prompt_tokens.to_vec(), model.make_cache())
+        };
+
+        let prompt_array = Array::from(actual_prompt_tokens.as_slice()).index(NewAxis);
+
+        Ok(PreparedGeneration {
+            model,
+            cache,
+            prompt_array,
+            prompt_len,
+        })
+    }
+
+    /// Run the prefill forward pass and sample the first token. Stores the
+    /// post-prefill KV state back into the prefix cache.
+    fn run_prefill(
+        &self,
+        prompt_tokens: &[u32],
+        prepared: &mut PreparedGeneration<'_>,
+        temperature: f32,
+        top_p: f32,
+    ) -> Result<Array, EngineError> {
+        let logits = prepared
+            .model
+            .forward(&prepared.prompt_array, None, &mut prepared.cache)
+            .map_err(EngineError::Mlx)?;
+        let current_token =
+            sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)?;
+        eval([&current_token]).map_err(EngineError::Mlx)?;
+
+        // Cache the state right after prefill
+        {
+            let mut pc = self
+                .prefix_cache
+                .lock()
+                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
+            pc.store(prompt_tokens.to_vec(), prepared.cache.clone());
+        }
+
+        Ok(current_token)
+    }
+
+    /// Decode a single step: forward pass on the current token and sample the next.
+    fn decode_step(
+        current_token: &Array,
+        model: &mut AnyModel,
+        cache: &mut AnyCache,
+        temperature: f32,
+        top_p: f32,
+    ) -> Result<Array, EngineError> {
+        let decode_input = current_token.index((.., NewAxis));
+        let logits = model
+            .forward(&decode_input, None, cache)
+            .map_err(EngineError::Mlx)?;
+        sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)
+    }
+
+    /// Decode tokens, check EOS/stop/max, and return the appropriate finish condition.
+    fn check_termination(
+        &self,
+        token_id: u32,
+        completion_len: u32,
+        max_tokens: u32,
+        decoded_text: &str,
+        stop_sequences: &[String],
+    ) -> FinishCondition {
+        if self.eos_token_ids.contains(&token_id) {
+            return FinishCondition::Eos;
+        }
+        if !stop_sequences.is_empty() {
+            if let Some(truncated) = check_stop_sequences(decoded_text, stop_sequences) {
+                return FinishCondition::StopSequence(truncated);
+            }
+        }
+        if completion_len >= max_tokens {
+            return FinishCondition::MaxTokens;
+        }
+        FinishCondition::None
+    }
+
+    /// Decode the token buffer and return the text, mapping tokenizer errors.
+    fn decode_tokens(&self, tokens: &[u32]) -> Result<String, EngineError> {
+        self.tokenizer
+            .decode(tokens, true)
+            .map_err(|e| EngineError::Tokenization(e.to_string()))
+    }
+
+    /// Convert a token count to u32, with an overflow error.
+    fn completion_len(tokens: &[u32]) -> Result<u32, EngineError> {
+        tokens
+            .len()
+            .try_into()
+            .map_err(|_| EngineError::Generation("Too many tokens generated".to_owned()))
+    }
+
     /// Generate a complete response from a token prompt.
     pub fn generate(
         &self,
@@ -106,102 +273,38 @@ impl SimpleEngine {
             return Ok(GenerationOutput {
                 text: String::new(),
                 finish_reason: "length".to_owned(),
-                prompt_tokens: prompt_tokens
-                    .len()
-                    .try_into()
-                    .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?,
+                prompt_tokens: Self::prompt_len(prompt_tokens)?,
                 completion_tokens: 0,
             });
         }
-        let prompt_len: u32 = prompt_tokens
-            .len()
-            .try_into()
-            .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?;
 
-        // Step 1: Check prefix cache (brief lock)
-        let prefix_match = {
-            let mut pc = self
-                .prefix_cache
-                .lock()
-                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
-            pc.find_longest_prefix(prompt_tokens)
-        };
-
-        // Step 2: Lock model and generate
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|e| EngineError::Generation(format!("Model lock poisoned: {e}")))?;
-
-        let (actual_prompt_tokens, mut cache) = if let Some(matched) = prefix_match {
-            tracing::debug!(
-                prefix_len = matched.prefix_len,
-                total_len = prompt_tokens.len(),
-                "Reusing cached prefix"
-            );
-            let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
-            if suffix.is_empty() {
-                // Full prefix match -- fall back to full prompt to avoid empty forward pass
-                (prompt_tokens.to_vec(), model.make_cache())
-            } else {
-                (suffix.to_vec(), matched.cache)
-            }
-        } else {
-            (prompt_tokens.to_vec(), model.make_cache())
-        };
-
-        let prompt_array = Array::from(actual_prompt_tokens.as_slice()).index(NewAxis);
-
-        // Prefill: forward pass on the prompt
-        let logits = model
-            .forward(&prompt_array, None, &mut cache)
-            .map_err(EngineError::Mlx)?;
+        let mut prepared = self.prepare_generation(prompt_tokens)?;
+        let prompt_len = prepared.prompt_len;
         let mut current_token =
-            sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)?;
-        eval([&current_token]).map_err(EngineError::Mlx)?;
-
-        // Cache the state right after prefill (before any decode tokens)
-        {
-            let mut pc = self
-                .prefix_cache
-                .lock()
-                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
-            pc.store(prompt_tokens.to_vec(), cache.clone());
-        }
+            self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut tokens: Vec<u32> = Vec::new();
         let first_token_id: u32 = current_token.item();
         tokens.push(first_token_id);
 
-        let first_decoded = self
-            .tokenizer
-            .decode(&tokens, true)
-            .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+        let first_decoded = self.decode_tokens(&tokens)?;
 
-        if self.eos_token_ids.contains(&first_token_id) {
+        let condition = self.check_termination(
+            first_token_id,
+            1,
+            max_tokens,
+            &first_decoded,
+            stop_sequences,
+        );
+
+        if condition.is_finished() {
+            let text = match &condition {
+                FinishCondition::StopSequence(truncated) => truncated.clone(),
+                _ => first_decoded,
+            };
             return Ok(GenerationOutput {
-                text: first_decoded,
-                finish_reason: "stop".to_owned(),
-                prompt_tokens: prompt_len,
-                completion_tokens: 1,
-            });
-        }
-
-        if !stop_sequences.is_empty() {
-            if let Some(truncated) = check_stop_sequences(&first_decoded, stop_sequences) {
-                return Ok(GenerationOutput {
-                    text: truncated,
-                    finish_reason: "stop".to_owned(),
-                    prompt_tokens: prompt_len,
-                    completion_tokens: 1,
-                });
-            }
-        }
-
-        if max_tokens <= 1 {
-            return Ok(GenerationOutput {
-                text: first_decoded,
-                finish_reason: "length".to_owned(),
+                text,
+                finish_reason: condition.reason_str().unwrap_or("stop").to_owned(),
                 prompt_tokens: prompt_len,
                 completion_tokens: 1,
             });
@@ -209,12 +312,13 @@ impl SimpleEngine {
 
         // Decode loop
         loop {
-            let decode_input_array = current_token.index((.., NewAxis));
-            let decode_logits = model
-                .forward(&decode_input_array, None, &mut cache)
-                .map_err(EngineError::Mlx)?;
-            current_token = sample(&decode_logits.index((.., -1, ..)), temperature, top_p)
-                .map_err(EngineError::Mlx)?;
+            current_token = Self::decode_step(
+                &current_token,
+                &mut prepared.model,
+                &mut prepared.cache,
+                temperature,
+                top_p,
+            )?;
 
             let token_id: u32 = current_token.item();
             tokens.push(token_id);
@@ -223,48 +327,20 @@ impl SimpleEngine {
                 eval([&current_token]).map_err(EngineError::Mlx)?;
             }
 
-            let completion_len: u32 = tokens
-                .len()
-                .try_into()
-                .map_err(|_| EngineError::Generation("Too many tokens generated".to_owned()))?;
+            let completion_len = Self::completion_len(&tokens)?;
+            let text = self.decode_tokens(&tokens)?;
 
-            if self.eos_token_ids.contains(&token_id) {
-                let text = self
-                    .tokenizer
-                    .decode(&tokens, true)
-                    .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+            let loop_condition =
+                self.check_termination(token_id, completion_len, max_tokens, &text, stop_sequences);
+
+            if loop_condition.is_finished() {
+                let final_text = match &loop_condition {
+                    FinishCondition::StopSequence(truncated) => truncated.clone(),
+                    _ => text,
+                };
                 return Ok(GenerationOutput {
-                    text,
-                    finish_reason: "stop".to_owned(),
-                    prompt_tokens: prompt_len,
-                    completion_tokens: completion_len,
-                });
-            }
-
-            // Check stop sequences
-            if !stop_sequences.is_empty() {
-                let text = self
-                    .tokenizer
-                    .decode(&tokens, true)
-                    .map_err(|e| EngineError::Tokenization(e.to_string()))?;
-                if let Some(truncated) = check_stop_sequences(&text, stop_sequences) {
-                    return Ok(GenerationOutput {
-                        text: truncated,
-                        finish_reason: "stop".to_owned(),
-                        prompt_tokens: prompt_len,
-                        completion_tokens: completion_len,
-                    });
-                }
-            }
-
-            if completion_len >= max_tokens {
-                let text = self
-                    .tokenizer
-                    .decode(&tokens, true)
-                    .map_err(|e| EngineError::Tokenization(e.to_string()))?;
-                return Ok(GenerationOutput {
-                    text,
-                    finish_reason: "length".to_owned(),
+                    text: final_text,
+                    finish_reason: loop_condition.reason_str().unwrap_or("stop").to_owned(),
                     prompt_tokens: prompt_len,
                     completion_tokens: completion_len,
                 });
@@ -288,10 +364,7 @@ impl SimpleEngine {
             return Err(EngineError::Generation("Prompt is empty".to_owned()));
         }
         if max_tokens == 0 {
-            let prompt_len: u32 = prompt_tokens
-                .len()
-                .try_into()
-                .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?;
+            let prompt_len = Self::prompt_len(prompt_tokens)?;
             let _ = sender.blocking_send(StreamingOutput {
                 new_text: String::new(),
                 finished: true,
@@ -301,70 +374,17 @@ impl SimpleEngine {
             });
             return Ok(());
         }
-        let prompt_len: u32 = prompt_tokens
-            .len()
-            .try_into()
-            .map_err(|_| EngineError::Generation("Prompt too long".to_owned()))?;
 
-        // Step 1: Check prefix cache
-        let prefix_match = {
-            let mut pc = self
-                .prefix_cache
-                .lock()
-                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
-            pc.find_longest_prefix(prompt_tokens)
-        };
-
-        // Step 2: Lock model and generate
-        let mut model = self
-            .model
-            .lock()
-            .map_err(|e| EngineError::Generation(format!("Model lock poisoned: {e}")))?;
-
-        let (actual_prompt_tokens, mut cache) = if let Some(matched) = prefix_match {
-            tracing::debug!(
-                prefix_len = matched.prefix_len,
-                total_len = prompt_tokens.len(),
-                "Reusing cached prefix (streaming)"
-            );
-            let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
-            if suffix.is_empty() {
-                (prompt_tokens.to_vec(), model.make_cache())
-            } else {
-                (suffix.to_vec(), matched.cache)
-            }
-        } else {
-            (prompt_tokens.to_vec(), model.make_cache())
-        };
-
-        let prompt_array = Array::from(actual_prompt_tokens.as_slice()).index(NewAxis);
-
-        // Prefill
-        let logits = model
-            .forward(&prompt_array, None, &mut cache)
-            .map_err(EngineError::Mlx)?;
+        let mut prepared = self.prepare_generation(prompt_tokens)?;
+        let prompt_len = prepared.prompt_len;
         let mut current_token =
-            sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)?;
-        eval([&current_token]).map_err(EngineError::Mlx)?;
-
-        // Cache state after prefill
-        {
-            let mut pc = self
-                .prefix_cache
-                .lock()
-                .map_err(|e| EngineError::Generation(format!("Cache lock poisoned: {e}")))?;
-            pc.store(prompt_tokens.to_vec(), cache.clone());
-        }
+            self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut all_tokens: Vec<u32> = Vec::new();
-        // Process first token
         let first_token_id: u32 = current_token.item();
         all_tokens.push(first_token_id);
 
-        let first_decoded = self
-            .tokenizer
-            .decode(&all_tokens, true)
-            .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+        let first_decoded = self.decode_tokens(&all_tokens)?;
         let (first_text, first_hit_stop) = if !stop_sequences.is_empty() {
             if let Some(truncated) = check_stop_sequences(&first_decoded, stop_sequences) {
                 (truncated, true)
@@ -379,7 +399,6 @@ impl SimpleEngine {
         let first_is_eos = self.eos_token_ids.contains(&first_token_id);
         let finished = first_is_eos || first_hit_stop || 1 >= max_tokens;
 
-        // Send first token; if receiver dropped, stop early
         if sender
             .blocking_send(StreamingOutput {
                 new_text: first_text,
@@ -405,12 +424,13 @@ impl SimpleEngine {
 
         // Decode loop
         loop {
-            let decode_input_array = current_token.index((.., NewAxis));
-            let decode_logits = model
-                .forward(&decode_input_array, None, &mut cache)
-                .map_err(EngineError::Mlx)?;
-            current_token = sample(&decode_logits.index((.., -1, ..)), temperature, top_p)
-                .map_err(EngineError::Mlx)?;
+            current_token = Self::decode_step(
+                &current_token,
+                &mut prepared.model,
+                &mut prepared.cache,
+                temperature,
+                top_p,
+            )?;
 
             let token_id: u32 = current_token.item();
             all_tokens.push(token_id);
@@ -419,15 +439,9 @@ impl SimpleEngine {
                 eval([&current_token]).map_err(EngineError::Mlx)?;
             }
 
-            let completion_len: u32 = all_tokens
-                .len()
-                .try_into()
-                .map_err(|_| EngineError::Generation("Too many tokens generated".to_owned()))?;
+            let completion_len = Self::completion_len(&all_tokens)?;
 
-            let full_text = self
-                .tokenizer
-                .decode(&all_tokens, true)
-                .map_err(|e| EngineError::Tokenization(e.to_string()))?;
+            let full_text = self.decode_tokens(&all_tokens)?;
             let new_text = full_text
                 .get(prev_decoded_len..)
                 .unwrap_or_default()
@@ -435,10 +449,8 @@ impl SimpleEngine {
             let old_decoded_len = prev_decoded_len;
             prev_decoded_len = full_text.len();
 
-            // Check stop sequences against the full decoded text
             let (final_new_text, hit_stop_seq) = if !stop_sequences.is_empty() {
                 if let Some(truncated) = check_stop_sequences(&full_text, stop_sequences) {
-                    // Emit only the text between previous position and the stop boundary
                     let emit = truncated
                         .get(old_decoded_len..)
                         .unwrap_or_default()
@@ -463,7 +475,6 @@ impl SimpleEngine {
                 None
             };
 
-            // Send token; if receiver dropped (client disconnected), stop early
             if sender
                 .blocking_send(StreamingOutput {
                     new_text: final_new_text,
@@ -544,194 +555,152 @@ fn extract_eos_tokens(model_dir: &Path) -> Vec<u32> {
 mod tests {
     use super::check_stop_sequences;
 
+    /// Write a config.json file into the given directory with the provided JSON content.
+    fn write_config(dir: &std::path::Path, json: &str) {
+        std::fs::write(dir.join("config.json"), json).unwrap();
+    }
+
+    /// Create a temp dir, write config.json with the given content, and return
+    /// the result of `extract_eos_tokens`.
+    fn eos_from_config(json: &str) -> Vec<u32> {
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), json);
+        super::extract_eos_tokens(dir.path())
+    }
+
     #[test]
     fn test_single_stop_sequence_found() {
-        let text = "Hello world, goodbye!";
-        let stops = vec!["goodbye".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("Hello world, goodbye!", &["goodbye".to_owned()]);
         assert_eq!(result, Some("Hello world, ".to_owned()));
     }
 
     #[test]
     fn test_no_stop_sequence_match() {
-        let text = "Hello world";
         let stops = vec!["goodbye".to_owned(), "farewell".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert!(result.is_none());
+        assert!(check_stop_sequences("Hello world", &stops).is_none());
     }
 
     #[test]
     fn test_empty_stop_sequences_list() {
-        let text = "Hello world";
-        let stops: Vec<String> = vec![];
-        let result = check_stop_sequences(text, &stops);
-        assert!(result.is_none());
+        assert!(check_stop_sequences("Hello world", &[]).is_none());
     }
 
     #[test]
     fn test_empty_text() {
-        let text = "";
-        let stops = vec!["hello".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert!(result.is_none());
+        assert!(check_stop_sequences("", &["hello".to_owned()]).is_none());
     }
 
     #[test]
     fn test_stop_sequence_at_beginning() {
-        let text = "STOP rest of text";
-        let stops = vec!["STOP".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("STOP rest of text", &["STOP".to_owned()]);
         assert_eq!(result, Some(String::new()));
     }
 
     #[test]
     fn test_stop_sequence_at_end() {
-        let text = "Hello world END";
-        let stops = vec!["END".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("Hello world END", &["END".to_owned()]);
         assert_eq!(result, Some("Hello world ".to_owned()));
+    }
+
+    fn assert_stop_sequence(text: &str, stops: &[&str], expected: &str) {
+        let owned_stops: Vec<String> = stops.iter().map(|s| (*s).to_owned()).collect();
+        let result = check_stop_sequences(text, &owned_stops);
+        assert_eq!(result, Some(expected.to_owned()));
     }
 
     #[test]
     fn test_multiple_stop_sequences_earliest_wins() {
-        let text = "aaa bbb ccc ddd";
-        // "ccc" appears at position 8, "bbb" at position 4
-        // "bbb" should win because it appears earlier, regardless of array order
-        let stops = vec!["ccc".to_owned(), "bbb".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert_eq!(result, Some("aaa ".to_owned()));
+        assert_stop_sequence("aaa bbb ccc ddd", &["ccc", "bbb"], "aaa ");
     }
 
     #[test]
     fn test_multiple_stop_sequences_earliest_wins_reverse_order() {
-        let text = "aaa bbb ccc ddd";
-        let stops = vec!["bbb".to_owned(), "ccc".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert_eq!(result, Some("aaa ".to_owned()));
+        assert_stop_sequence("aaa bbb ccc ddd", &["bbb", "ccc"], "aaa ");
     }
 
     #[test]
     fn test_overlapping_stop_sequences_prefix() {
         // "ab" is a prefix of "abc". "ab" appears first at position 0.
-        let text = "abc def";
         let stops = vec!["abc".to_owned(), "ab".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert_eq!(result, Some(String::new()));
+        assert_eq!(check_stop_sequences("abc def", &stops), Some(String::new()));
     }
 
     #[test]
     fn test_stop_sequence_appears_multiple_times() {
-        let text = "before stop middle stop after";
-        let stops = vec!["stop".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("before stop middle stop after", &["stop".to_owned()]);
         assert_eq!(result, Some("before ".to_owned()));
     }
 
     #[test]
     fn test_stop_sequence_is_entire_text() {
-        let text = "STOP";
-        let stops = vec!["STOP".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        assert_eq!(result, Some(String::new()));
+        assert_eq!(
+            check_stop_sequences("STOP", &["STOP".to_owned()]),
+            Some(String::new())
+        );
     }
 
     #[test]
     fn test_stop_sequence_with_newlines() {
-        let text = "line one\nline two\nline three";
-        let stops = vec!["\n".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("line one\nline two\nline three", &["\n".to_owned()]);
         assert_eq!(result, Some("line one".to_owned()));
     }
 
     #[test]
     fn test_extract_eos_tokens_single_number() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": 151643}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert_eq!(result, vec![151643]);
+        assert_eq!(eos_from_config(r#"{"eos_token_id": 151643}"#), vec![151643]);
     }
 
     #[test]
     fn test_extract_eos_tokens_array() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": [151643, 151645]}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert_eq!(result, vec![151643, 151645]);
+        assert_eq!(
+            eos_from_config(r#"{"eos_token_id": [151643, 151645]}"#),
+            vec![151643, 151645]
+        );
     }
 
     #[test]
     fn test_extract_eos_tokens_missing_field() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen2"}"#).unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert!(result.is_empty());
+        assert!(eos_from_config(r#"{"model_type": "qwen2"}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_unexpected_type() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": "string"}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert!(result.is_empty());
+        assert!(eos_from_config(r#"{"eos_token_id": "string"}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_missing_config_file() {
         let dir = tempfile::tempdir().unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert!(result.is_empty());
+        assert!(super::extract_eos_tokens(dir.path()).is_empty());
     }
 
     // -- Additional check_stop_sequences edge cases --
 
     #[test]
     fn test_stop_sequence_substring_of_another() {
-        // "stop" is a substring of "stop_now"
-        let text = "Hello stop_now world";
-        let stops = vec!["stop_now".to_owned(), "stop".to_owned()];
-        let result = check_stop_sequences(text, &stops);
-        // "stop" appears at position 6, "stop_now" also at position 6
-        // Both match at same position, earliest is 6
-        assert_eq!(result, Some("Hello ".to_owned()));
+        assert_stop_sequence("Hello stop_now world", &["stop_now", "stop"], "Hello ");
     }
 
     #[test]
     fn test_stop_sequence_unicode() {
-        let text = "Hello world, a]b stop here";
-        let stops = vec!["\u{1F600}".to_owned()]; // emoji stop sequence
-        let result = check_stop_sequences(text, &stops);
-        assert!(result.is_none()); // emoji not present
+        let stops = vec!["\u{1F600}".to_owned()];
+        assert!(check_stop_sequences("Hello world, a]b stop here", &stops).is_none());
 
-        let text_with_emoji = "Hello \u{1F600} world";
-        let result2 = check_stop_sequences(text_with_emoji, &stops);
-        assert_eq!(result2, Some("Hello ".to_owned()));
+        let result = check_stop_sequences("Hello \u{1F600} world", &stops);
+        assert_eq!(result, Some("Hello ".to_owned()));
     }
 
     #[test]
     fn test_stop_sequence_unicode_multibyte() {
-        let text = "Bonjour le monde, arr\u{00EA}t ici";
         let stops = vec!["arr\u{00EA}t".to_owned()];
-        let result = check_stop_sequences(text, &stops);
+        let result = check_stop_sequences("Bonjour le monde, arr\u{00EA}t ici", &stops);
         assert_eq!(result, Some("Bonjour le monde, ".to_owned()));
     }
 
     #[test]
     fn test_stop_sequence_very_long_text_short_stop() {
         let long_text = "a".repeat(10_000) + "STOP" + &"b".repeat(5_000);
-        let stops = vec!["STOP".to_owned()];
-        let result = check_stop_sequences(&long_text, &stops);
+        let result = check_stop_sequences(&long_text, &["STOP".to_owned()]);
         assert_eq!(result, Some("a".repeat(10_000)));
     }
 
@@ -739,84 +708,44 @@ mod tests {
 
     #[test]
     fn test_extract_eos_tokens_float_value() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": 151643.0}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        // serde_json parses 151643.0 as a float, and as_u64() returns None for floats,
-        // so the result is empty. This is a Number variant but not integer-representable.
-        assert!(result.is_empty());
+        // serde_json parses 151643.0 as a float, and as_u64() returns None for floats
+        assert!(eos_from_config(r#"{"eos_token_id": 151643.0}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_string_value() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": "not_a_number"}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert!(result.is_empty());
+        assert!(eos_from_config(r#"{"eos_token_id": "not_a_number"}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_nested_array() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": [[1, 2], [3, 4]]}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        // Nested arrays: inner arrays are not numbers, so as_u64() returns None for them
-        assert!(result.is_empty());
+        // Inner arrays are not numbers, so as_u64() returns None for them
+        assert!(eos_from_config(r#"{"eos_token_id": [[1, 2], [3, 4]]}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_negative_number() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"eos_token_id": -1}"#).unwrap();
-        let result = super::extract_eos_tokens(dir.path());
         // as_u64() returns None for negative numbers
-        assert!(result.is_empty());
+        assert!(eos_from_config(r#"{"eos_token_id": -1}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_very_large_number() {
-        let dir = tempfile::tempdir().unwrap();
-        // u32::MAX is 4294967295, use a number larger than that
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": 4294967296}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        // as_u64() succeeds but u32::try_from fails for values > u32::MAX
-        assert!(result.is_empty());
+        // u32::MAX is 4294967295; as_u64() succeeds but u32::try_from fails
+        assert!(eos_from_config(r#"{"eos_token_id": 4294967296}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_empty_array() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("config.json"), r#"{"eos_token_id": []}"#).unwrap();
-        let result = super::extract_eos_tokens(dir.path());
-        assert!(result.is_empty());
+        assert!(eos_from_config(r#"{"eos_token_id": []}"#).is_empty());
     }
 
     #[test]
     fn test_extract_eos_tokens_mixed_types_in_array() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("config.json"),
-            r#"{"eos_token_id": [1, "two", 3]}"#,
-        )
-        .unwrap();
-        let result = super::extract_eos_tokens(dir.path());
         // Only numeric entries are extracted; "two" is skipped
-        assert_eq!(result, vec![1, 3]);
+        assert_eq!(
+            eos_from_config(r#"{"eos_token_id": [1, "two", 3]}"#),
+            vec![1, 3]
+        );
     }
 }
