@@ -1366,7 +1366,7 @@ dependencies = [
 
 [[package]]
 name = "mlx-engine"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "minijinja",
  "mlx-models",
@@ -1407,7 +1407,7 @@ dependencies = [
 
 [[package]]
 name = "mlx-models"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mlx-rs",
  "serde",
@@ -1444,7 +1444,7 @@ dependencies = [
 
 [[package]]
 name = "mlx-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-stream",
  "axum",
