@@ -8,7 +8,7 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions: {}
+permissions: read-all
 
 jobs:
   release-please:
