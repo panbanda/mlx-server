@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.2](https://github.com/panbanda/mlx-server/compare/mlx-models-v0.1.1...mlx-models-v0.1.2) (2026-02-18)
+
+
+### Features
+
+* publish crates to crates.io on release ([5363b1a](https://github.com/panbanda/mlx-server/commit/5363b1a45c2aadecc3538803b7340adc9d975b7c))
+
+
+### Bug Fixes
+
+* add doc comments to AnyModel variants and WeightMapIndex fields ([b6a8f0e](https://github.com/panbanda/mlx-server/commit/b6a8f0ea86373a0bf7aeb0218da314a8de89010d))
+
 ## [0.1.1](https://github.com/panbanda/mlx-server/compare/mlx-models-v0.1.0...mlx-models-v0.1.1) (2026-02-18)
 
 
