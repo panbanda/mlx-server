@@ -47,8 +47,7 @@ But mlx-rs `QuantizedLinear` uses nested parameter names:
 - `layer.biases`
 
 The `remap_quantized_key()` function in `mlx-models/src/lib.rs` handles this
-by retrying `.weight` -> `.inner.weight` and `.bias` (singular) -> `.inner.bias`.
-Note that `.biases` (plural) is a quantization parameter and is not remapped.
+by retrying `.weight` -> `.inner.weight` and `.bias` -> `.inner.bias`.
 
 ## ModuleParameters Derive
 

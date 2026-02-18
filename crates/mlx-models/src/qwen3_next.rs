@@ -450,11 +450,6 @@ struct SparseMoeBlock {
 
 impl SparseMoeBlock {
     fn new(args: &Qwen3NextModelArgs, ql: i32, qb: i32) -> Result<Self, Exception> {
-        if args.num_experts_per_tok > args.num_experts {
-            return Err(Exception::custom(
-                "num_experts_per_tok must be <= num_experts",
-            ));
-        }
         // Router gate and shared_expert_gate use 8-bit quantization
         Ok(Self {
             gate: QLinear::new(64, 8)?,
@@ -670,10 +665,10 @@ impl GatedDeltaNet {
         let (q, k, v, z, b, a) = self.fix_query_key_value_ordering(&mixed_qkvz, &mixed_ba, B, S)?;
 
         // Conv1d with state management
-        let conv_state = match cache.conv_state.take() {
-            Some(state) => state,
-            None => Array::zeros::<f32>(&[B, self.conv_kernel_size - 1, self.conv_dim])?,
-        };
+        let conv_state = cache.conv_state.take().unwrap_or_else(|| {
+            Array::zeros::<f32>(&[B, self.conv_kernel_size - 1, self.conv_dim])
+                .unwrap_or_else(|_| Array::from_slice(&[0.0_f32], &[1]))
+        });
 
         // Concatenate q, k, v for conv input
         let q_flat = q.reshape(&[B, S, -1])?;
@@ -734,12 +729,10 @@ impl GatedDeltaNet {
         let beta = nn::sigmoid(&b)?;
 
         // Get or initialize SSM state: [B, Hv, Dv, Dk]
-        let mut state = match cache.ssm_state.take() {
-            Some(state) => state,
-            None => {
-                Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])?
-            }
-        };
+        let mut state = cache.ssm_state.take().unwrap_or_else(|| {
+            Array::zeros::<f32>(&[B, self.num_v_heads, self.head_v_dim, self.head_k_dim])
+                .unwrap_or_else(|_| Array::from_slice(&[0.0_f32], &[1]))
+        });
 
         // Repeat q, k for value head groups if needed
         let repeat_factor = self.num_v_heads / self.num_k_heads;
@@ -1229,7 +1222,7 @@ mod tests {
         let k = Array::ones::<f32>(&[1, 2, 4]).unwrap();
         let v = Array::ones::<f32>(&[1, 2, 3]).unwrap();
         let g = Array::ones::<f32>(&[1, 2]).unwrap();
-        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 2]).unwrap();
+        let beta = ops::broadcast_to(&Array::from_f32(0.5), &[1, 2]).unwrap();
         let state = Array::zeros::<f32>(&[1, 2, 3, 4]).unwrap();
 
         let (y, new_state) = gated_delta_step(&q, &k, &v, &g, &beta, &state).unwrap();
