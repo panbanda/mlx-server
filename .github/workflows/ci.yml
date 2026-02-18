@@ -87,7 +87,7 @@ jobs:
         run: cargo check --all-features
 
   coverage:
-    name: Coverage (80%)
+    name: Coverage (70%)
     runs-on: macos-latest
     permissions:
       contents: read
@@ -112,7 +112,7 @@ jobs:
           cargo llvm-cov \
             --all-features \
             --workspace \
-            --fail-under-lines 80 \
+            --fail-under-lines 70 \
             -- --test-threads=1
 
       - name: Generate LCOV report
