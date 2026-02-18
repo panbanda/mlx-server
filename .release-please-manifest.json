@@ -1,5 +1,5 @@
 {
   "crates/mlx-models": "0.1.2",
   "crates/mlx-engine": "0.1.2",
-  "crates/mlx-server": "0.1.3"
+  "crates/mlx-server": "0.1.4"
 }
