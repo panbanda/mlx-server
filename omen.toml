@@ -24,7 +24,7 @@ similarity_threshold = 0.85
 top = 20
 
 [score]
-fail_under = 70
+fail_under = 85
 
 [score.thresholds]
 complexity = 80.0
