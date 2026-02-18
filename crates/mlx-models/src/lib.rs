@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod error;
+pub mod qwen3_next;
 pub mod registry;
 pub mod transformer;
 pub mod utils;
@@ -14,7 +15,49 @@ use serde_json::Value;
 
 use crate::error::ModelError;
 
+pub use qwen3_next::{LayerCache, Qwen3NextCausalLM};
 pub use transformer::{Model, ModelArgs};
+
+// ---------------------------------------------------------------------------
+// AnyModel / AnyCache -- unified dispatch across model architectures
+// ---------------------------------------------------------------------------
+
+/// Cache type that works for all supported model architectures.
+#[derive(Debug, Clone)]
+pub enum AnyCache {
+    /// Standard KV cache for transformer models (Qwen2/Llama/Mistral).
+    KV(Vec<Option<cache::ConcatKeyValueCache>>),
+    /// Hybrid KV+SSM cache for qwen3_next.
+    Hybrid(Vec<Option<LayerCache>>),
+}
+
+/// Unified model wrapper dispatching to the correct architecture.
+pub enum AnyModel {
+    Transformer(Model),
+    Qwen3Next(Qwen3NextCausalLM),
+}
+
+impl AnyModel {
+    pub fn forward(
+        &mut self,
+        inputs: &Array,
+        mask: Option<&Array>,
+        cache: &mut AnyCache,
+    ) -> Result<Array, Exception> {
+        match (self, cache) {
+            (AnyModel::Transformer(m), AnyCache::KV(c)) => m.forward(inputs, mask, c),
+            (AnyModel::Qwen3Next(m), AnyCache::Hybrid(c)) => m.forward(inputs, mask, c),
+            _ => Err(Exception::custom("Model/cache type mismatch")),
+        }
+    }
+
+    pub fn make_cache(&self) -> AnyCache {
+        match self {
+            AnyModel::Transformer(_) => AnyCache::KV(Vec::new()),
+            AnyModel::Qwen3Next(m) => AnyCache::Hybrid(m.make_cache()),
+        }
+    }
+}
 
 /// Sample a token from logits with temperature and top-p (nucleus) sampling.
 ///

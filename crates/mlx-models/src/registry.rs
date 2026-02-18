@@ -17,7 +17,10 @@ pub fn detect_model_type(model_dir: impl AsRef<Path>) -> Result<String, ModelErr
 
 /// Supported model architectures.
 pub fn is_supported(model_type: &str) -> bool {
-    matches!(model_type, "qwen2" | "qwen3" | "llama" | "mistral")
+    matches!(
+        model_type,
+        "qwen2" | "qwen3" | "llama" | "mistral" | "qwen3_next"
+    )
 }
 
 #[cfg(test)]

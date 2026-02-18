@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use mlx_models::cache::ConcatKeyValueCache;
+use mlx_models::AnyCache;
 
 /// In-memory prefix KV cache with LRU eviction.
 ///
@@ -15,7 +15,7 @@ pub struct PrefixCache {
 
 struct CacheEntry {
     prefix_tokens: Vec<u32>,
-    kv_cache: Vec<Option<ConcatKeyValueCache>>,
+    cache: AnyCache,
     last_accessed: Instant,
 }
 
@@ -23,8 +23,8 @@ struct CacheEntry {
 pub struct PrefixMatch {
     /// Number of tokens from the beginning that matched the cached prefix.
     pub prefix_len: usize,
-    /// Cloned KV cache state for the matched prefix.
-    pub kv_cache: Vec<Option<ConcatKeyValueCache>>,
+    /// Cloned cache state for the matched prefix.
+    pub cache: AnyCache,
 }
 
 impl PrefixCache {
@@ -67,7 +67,7 @@ impl PrefixCache {
                 entry.last_accessed = Instant::now();
                 return Some(PrefixMatch {
                     prefix_len: entry.prefix_tokens.len(),
-                    kv_cache: entry.kv_cache.clone(),
+                    cache: entry.cache.clone(),
                 });
             }
         }
@@ -75,8 +75,8 @@ impl PrefixCache {
         None
     }
 
-    /// Store a prefix and its KV cache state.
-    pub fn store(&mut self, prefix_tokens: Vec<u32>, kv_cache: Vec<Option<ConcatKeyValueCache>>) {
+    /// Store a prefix and its cache state.
+    pub fn store(&mut self, prefix_tokens: Vec<u32>, cache: AnyCache) {
         if self.max_entries == 0 {
             return;
         }
@@ -98,7 +98,7 @@ impl PrefixCache {
             key,
             CacheEntry {
                 prefix_tokens,
-                kv_cache,
+                cache,
                 last_accessed: Instant::now(),
             },
         );
@@ -145,12 +145,21 @@ fn hash_tokens(tokens: &[u32]) -> u64 {
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use mlx_models::AnyCache;
     use mlx_models::cache::ConcatKeyValueCache;
 
-    fn make_dummy_kv_cache(num_layers: usize) -> Vec<Option<ConcatKeyValueCache>> {
-        (0..num_layers)
+    fn make_dummy_cache(num_layers: usize) -> AnyCache {
+        let kv: Vec<Option<ConcatKeyValueCache>> = (0..num_layers)
             .map(|_| Some(ConcatKeyValueCache::new()))
-            .collect()
+            .collect();
+        AnyCache::KV(kv)
+    }
+
+    fn cache_layer_count(cache: &AnyCache) -> usize {
+        match cache {
+            AnyCache::KV(v) => v.len(),
+            AnyCache::Hybrid(v) => v.len(),
+        }
     }
 
     #[test]
@@ -164,7 +173,7 @@ mod tests {
     fn test_store_and_find_exact_match() {
         let mut cache = PrefixCache::new(10);
         let prefix: Vec<u32> = (0..32).collect();
-        let kv = make_dummy_kv_cache(4);
+        let kv = make_dummy_cache(4);
 
         cache.store(prefix.clone(), kv);
         assert_eq!(cache.len(), 1);
@@ -177,14 +186,14 @@ mod tests {
         assert!(result.is_some());
         let matched = result.unwrap();
         assert_eq!(matched.prefix_len, 32);
-        assert_eq!(matched.kv_cache.len(), 4);
+        assert_eq!(cache_layer_count(&matched.cache), 4);
     }
 
     #[test]
     fn test_no_match_for_different_prefix() {
         let mut cache = PrefixCache::new(10);
         let prefix: Vec<u32> = (0..32).collect();
-        cache.store(prefix, make_dummy_kv_cache(4));
+        cache.store(prefix, make_dummy_cache(4));
 
         // Different token sequence
         let query: Vec<u32> = (100..132).collect();
@@ -196,7 +205,7 @@ mod tests {
         let mut cache = PrefixCache::new(10);
         // Only 8 tokens (below min threshold of 16)
         let prefix: Vec<u32> = (0..8).collect();
-        cache.store(prefix, make_dummy_kv_cache(4));
+        cache.store(prefix, make_dummy_cache(4));
 
         let query: Vec<u32> = (0..32).collect();
         assert!(cache.find_longest_prefix(&query).is_none());
@@ -210,12 +219,12 @@ mod tests {
         let prefix_b: Vec<u32> = (100..132).collect();
         let prefix_c: Vec<u32> = (200..232).collect();
 
-        cache.store(prefix_a, make_dummy_kv_cache(4));
-        cache.store(prefix_b, make_dummy_kv_cache(4));
+        cache.store(prefix_a, make_dummy_cache(4));
+        cache.store(prefix_b, make_dummy_cache(4));
         assert_eq!(cache.len(), 2);
 
         // Adding a third should evict the LRU (prefix_a, since it was stored first)
-        cache.store(prefix_c.clone(), make_dummy_kv_cache(4));
+        cache.store(prefix_c.clone(), make_dummy_cache(4));
         assert_eq!(cache.len(), 2);
 
         // prefix_c should still be found
@@ -228,7 +237,7 @@ mod tests {
     fn test_zero_capacity_never_stores() {
         let mut cache = PrefixCache::new(0);
         let prefix: Vec<u32> = (0..32).collect();
-        cache.store(prefix.clone(), make_dummy_kv_cache(4));
+        cache.store(prefix.clone(), make_dummy_cache(4));
         assert!(cache.is_empty());
 
         let mut query = prefix;
@@ -240,7 +249,7 @@ mod tests {
     fn test_clear() {
         let mut cache = PrefixCache::new(10);
         let prefix: Vec<u32> = (0..32).collect();
-        cache.store(prefix, make_dummy_kv_cache(4));
+        cache.store(prefix, make_dummy_cache(4));
         assert_eq!(cache.len(), 1);
 
         cache.clear();
@@ -253,11 +262,11 @@ mod tests {
 
         // Store a shorter prefix
         let short_prefix: Vec<u32> = (0..20).collect();
-        cache.store(short_prefix, make_dummy_kv_cache(4));
+        cache.store(short_prefix, make_dummy_cache(4));
 
         // Store a longer prefix that extends the short one
         let long_prefix: Vec<u32> = (0..50).collect();
-        cache.store(long_prefix, make_dummy_kv_cache(4));
+        cache.store(long_prefix, make_dummy_cache(4));
 
         // Query should match the longer prefix
         let query: Vec<u32> = (0..64).collect();
@@ -271,19 +280,19 @@ mod tests {
         let mut cache = PrefixCache::new(10);
         let prefix: Vec<u32> = (0..32).collect();
 
-        cache.store(prefix.clone(), make_dummy_kv_cache(2));
+        cache.store(prefix.clone(), make_dummy_cache(2));
         assert_eq!(cache.len(), 1);
 
-        // Store again with same tokens but different kv_cache layer count.
+        // Store again with same tokens but different cache layer count.
         // This is NOT a collision (same hash, same tokens), so it should overwrite.
-        cache.store(prefix.clone(), make_dummy_kv_cache(8));
+        cache.store(prefix.clone(), make_dummy_cache(8));
         assert_eq!(cache.len(), 1);
 
         let mut query = prefix;
         query.push(999);
         let result = cache.find_longest_prefix(&query).unwrap();
-        // The kv_cache should reflect the second store (8 layers)
-        assert_eq!(result.kv_cache.len(), 8);
+        // The cache should reflect the second store (8 layers)
+        assert_eq!(cache_layer_count(&result.cache), 8);
     }
 
     #[test]
@@ -293,38 +302,28 @@ mod tests {
         let mut cache = PrefixCache::new(1);
         let prefix: Vec<u32> = (0..32).collect();
 
-        cache.store(prefix.clone(), make_dummy_kv_cache(2));
+        cache.store(prefix.clone(), make_dummy_cache(2));
         assert_eq!(cache.len(), 1);
 
         // Overwrite with same prefix -- should NOT evict (key already present)
-        cache.store(prefix.clone(), make_dummy_kv_cache(4));
+        cache.store(prefix.clone(), make_dummy_cache(4));
         assert_eq!(cache.len(), 1);
 
         let mut query = prefix;
         query.push(999);
         let result = cache.find_longest_prefix(&query).unwrap();
-        assert_eq!(result.kv_cache.len(), 4);
+        assert_eq!(cache_layer_count(&result.cache), 4);
     }
 
     #[test]
     fn test_collision_guard_skips_different_tokens_same_hash() {
-        // We can't easily force a real hash collision with DefaultHasher,
-        // but we can verify the logic indirectly: if two different token
-        // sequences were to produce the same hash, the second store would
-        // be skipped. We test the contract by checking that after storing
-        // prefix_a, the cache still returns prefix_a's data even if we
-        // attempt to store prefix_b with the same key.
-        //
-        // To simulate this, we directly test the collision guard path by
-        // verifying that distinct token sequences produce distinct keys
-        // (no collision) and thus both get stored.
         let mut cache = PrefixCache::new(10);
 
         let prefix_a: Vec<u32> = (0..32).collect();
         let prefix_b: Vec<u32> = (100..132).collect();
 
-        cache.store(prefix_a.clone(), make_dummy_kv_cache(2));
-        cache.store(prefix_b.clone(), make_dummy_kv_cache(4));
+        cache.store(prefix_a.clone(), make_dummy_cache(2));
+        cache.store(prefix_b.clone(), make_dummy_cache(4));
 
         // Both should be stored since they have different hashes
         assert_eq!(cache.len(), 2);
@@ -332,30 +331,28 @@ mod tests {
         let mut query_a = prefix_a;
         query_a.push(999);
         let result_a = cache.find_longest_prefix(&query_a).unwrap();
-        assert_eq!(result_a.kv_cache.len(), 2);
+        assert_eq!(cache_layer_count(&result_a.cache), 2);
 
         let mut query_b = prefix_b;
         query_b.push(999);
         let result_b = cache.find_longest_prefix(&query_b).unwrap();
-        assert_eq!(result_b.kv_cache.len(), 4);
+        assert_eq!(cache_layer_count(&result_b.cache), 4);
     }
 
     #[test]
     fn test_eviction_only_when_new_key() {
-        // With max_entries=2, filling to capacity and then overwriting an
-        // existing entry should NOT evict, but adding a truly new entry should.
         let mut cache = PrefixCache::new(2);
 
         let prefix_a: Vec<u32> = (0..32).collect();
         let prefix_b: Vec<u32> = (100..132).collect();
         let prefix_c: Vec<u32> = (200..232).collect();
 
-        cache.store(prefix_a.clone(), make_dummy_kv_cache(1));
-        cache.store(prefix_b.clone(), make_dummy_kv_cache(2));
+        cache.store(prefix_a.clone(), make_dummy_cache(1));
+        cache.store(prefix_b.clone(), make_dummy_cache(2));
         assert_eq!(cache.len(), 2);
 
         // Overwrite prefix_a: no eviction, still 2 entries
-        cache.store(prefix_a.clone(), make_dummy_kv_cache(3));
+        cache.store(prefix_a.clone(), make_dummy_cache(3));
         assert_eq!(cache.len(), 2);
 
         // Verify both original keys still present
@@ -367,9 +364,8 @@ mod tests {
         query_b.push(999);
         assert!(cache.find_longest_prefix(&query_b).is_some());
 
-        // Now add a truly new prefix_c: should trigger eviction (oldest = prefix_b,
-        // since prefix_a was just overwritten and got a fresh timestamp)
-        cache.store(prefix_c.clone(), make_dummy_kv_cache(4));
+        // Now add a truly new prefix_c: should trigger eviction
+        cache.store(prefix_c.clone(), make_dummy_cache(4));
         assert_eq!(cache.len(), 2);
 
         let mut query_c = prefix_c;

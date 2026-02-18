@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use mlx_models::{Model, load_tokenizer as shared_load_tokenizer, registry, transformer};
+use mlx_models::{AnyModel, load_tokenizer as shared_load_tokenizer, registry, transformer};
 
 use crate::error::EngineError;
 
@@ -30,13 +30,18 @@ impl ModelConfig {
 }
 
 /// Load a model from a directory, auto-detecting the architecture.
-pub fn load_model(model_dir: impl AsRef<Path>) -> Result<Model, EngineError> {
+pub fn load_model(model_dir: impl AsRef<Path>) -> Result<AnyModel, EngineError> {
     let config = ModelConfig::from_dir(&model_dir)?;
 
-    // Verify the detected type is supported, then load with the unified loader
     match config.model_type.as_str() {
         "qwen2" | "qwen3" | "llama" | "mistral" => {
-            transformer::load_model(&config.model_dir).map_err(EngineError::Model)
+            let model = transformer::load_model(&config.model_dir).map_err(EngineError::Model)?;
+            Ok(AnyModel::Transformer(model))
+        }
+        "qwen3_next" => {
+            let model = mlx_models::qwen3_next::load_qwen3_next_model(&config.model_dir)
+                .map_err(EngineError::Model)?;
+            Ok(AnyModel::Qwen3Next(model))
         }
         other => Err(EngineError::Model(
             mlx_models::error::ModelError::UnsupportedModel(other.to_owned()),

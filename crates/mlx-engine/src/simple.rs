@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use mlx_models::{Model, sample};
+use mlx_models::{AnyModel, sample};
 use mlx_rs::{
     Array,
     ops::indexing::{IndexOp, NewAxis},
@@ -25,7 +25,7 @@ const DEFAULT_PREFIX_CACHE_SIZE: usize = 8;
 /// Serializes requests with a mutex (same pattern as vllm-mlx's SimpleEngine).
 /// Reuses cached KV states for shared prompt prefixes (e.g., system prompts).
 pub struct SimpleEngine {
-    model: Mutex<Model>,
+    model: Mutex<AnyModel>,
     prefix_cache: Mutex<PrefixCache>,
     tokenizer: Tokenizer,
     template: ChatTemplateRenderer,
@@ -131,12 +131,12 @@ impl SimpleEngine {
             let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
             if suffix.is_empty() {
                 // Full prefix match -- fall back to full prompt to avoid empty forward pass
-                (prompt_tokens.to_vec(), Vec::new())
+                (prompt_tokens.to_vec(), model.make_cache())
             } else {
-                (suffix.to_vec(), matched.kv_cache)
+                (suffix.to_vec(), matched.cache)
             }
         } else {
-            (prompt_tokens.to_vec(), Vec::new())
+            (prompt_tokens.to_vec(), model.make_cache())
         };
 
         let prompt_array = Array::from(actual_prompt_tokens.as_slice()).index(NewAxis);
@@ -149,7 +149,7 @@ impl SimpleEngine {
             sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)?;
         eval([&current_token]).map_err(EngineError::Mlx)?;
 
-        // Cache the KV state right after prefill (before any decode tokens)
+        // Cache the state right after prefill (before any decode tokens)
         {
             let mut pc = self
                 .prefix_cache
@@ -304,12 +304,12 @@ impl SimpleEngine {
             );
             let suffix = prompt_tokens.get(matched.prefix_len..).unwrap_or_default();
             if suffix.is_empty() {
-                (prompt_tokens.to_vec(), Vec::new())
+                (prompt_tokens.to_vec(), model.make_cache())
             } else {
-                (suffix.to_vec(), matched.kv_cache)
+                (suffix.to_vec(), matched.cache)
             }
         } else {
-            (prompt_tokens.to_vec(), Vec::new())
+            (prompt_tokens.to_vec(), model.make_cache())
         };
 
         let prompt_array = Array::from(actual_prompt_tokens.as_slice()).index(NewAxis);
@@ -322,7 +322,7 @@ impl SimpleEngine {
             sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)?;
         eval([&current_token]).map_err(EngineError::Mlx)?;
 
-        // Cache KV state after prefill
+        // Cache state after prefill
         {
             let mut pc = self
                 .prefix_cache
