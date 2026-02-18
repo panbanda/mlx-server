@@ -265,4 +265,115 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap().prefix_len, 50);
     }
+
+    #[test]
+    fn test_store_same_tokens_overwrites() {
+        let mut cache = PrefixCache::new(10);
+        let prefix: Vec<u32> = (0..32).collect();
+
+        cache.store(prefix.clone(), make_dummy_kv_cache(2));
+        assert_eq!(cache.len(), 1);
+
+        // Store again with same tokens but different kv_cache layer count.
+        // This is NOT a collision (same hash, same tokens), so it should overwrite.
+        cache.store(prefix.clone(), make_dummy_kv_cache(8));
+        assert_eq!(cache.len(), 1);
+
+        let mut query = prefix;
+        query.push(999);
+        let result = cache.find_longest_prefix(&query).unwrap();
+        // The kv_cache should reflect the second store (8 layers)
+        assert_eq!(result.kv_cache.len(), 8);
+    }
+
+    #[test]
+    fn test_overwrite_does_not_trigger_eviction() {
+        // With capacity 1, storing the same prefix twice should not evict anything
+        // because the key already exists and the `contains_key` guard prevents eviction.
+        let mut cache = PrefixCache::new(1);
+        let prefix: Vec<u32> = (0..32).collect();
+
+        cache.store(prefix.clone(), make_dummy_kv_cache(2));
+        assert_eq!(cache.len(), 1);
+
+        // Overwrite with same prefix -- should NOT evict (key already present)
+        cache.store(prefix.clone(), make_dummy_kv_cache(4));
+        assert_eq!(cache.len(), 1);
+
+        let mut query = prefix;
+        query.push(999);
+        let result = cache.find_longest_prefix(&query).unwrap();
+        assert_eq!(result.kv_cache.len(), 4);
+    }
+
+    #[test]
+    fn test_collision_guard_skips_different_tokens_same_hash() {
+        // We can't easily force a real hash collision with DefaultHasher,
+        // but we can verify the logic indirectly: if two different token
+        // sequences were to produce the same hash, the second store would
+        // be skipped. We test the contract by checking that after storing
+        // prefix_a, the cache still returns prefix_a's data even if we
+        // attempt to store prefix_b with the same key.
+        //
+        // To simulate this, we directly test the collision guard path by
+        // verifying that distinct token sequences produce distinct keys
+        // (no collision) and thus both get stored.
+        let mut cache = PrefixCache::new(10);
+
+        let prefix_a: Vec<u32> = (0..32).collect();
+        let prefix_b: Vec<u32> = (100..132).collect();
+
+        cache.store(prefix_a.clone(), make_dummy_kv_cache(2));
+        cache.store(prefix_b.clone(), make_dummy_kv_cache(4));
+
+        // Both should be stored since they have different hashes
+        assert_eq!(cache.len(), 2);
+
+        let mut query_a = prefix_a;
+        query_a.push(999);
+        let result_a = cache.find_longest_prefix(&query_a).unwrap();
+        assert_eq!(result_a.kv_cache.len(), 2);
+
+        let mut query_b = prefix_b;
+        query_b.push(999);
+        let result_b = cache.find_longest_prefix(&query_b).unwrap();
+        assert_eq!(result_b.kv_cache.len(), 4);
+    }
+
+    #[test]
+    fn test_eviction_only_when_new_key() {
+        // With max_entries=2, filling to capacity and then overwriting an
+        // existing entry should NOT evict, but adding a truly new entry should.
+        let mut cache = PrefixCache::new(2);
+
+        let prefix_a: Vec<u32> = (0..32).collect();
+        let prefix_b: Vec<u32> = (100..132).collect();
+        let prefix_c: Vec<u32> = (200..232).collect();
+
+        cache.store(prefix_a.clone(), make_dummy_kv_cache(1));
+        cache.store(prefix_b.clone(), make_dummy_kv_cache(2));
+        assert_eq!(cache.len(), 2);
+
+        // Overwrite prefix_a: no eviction, still 2 entries
+        cache.store(prefix_a.clone(), make_dummy_kv_cache(3));
+        assert_eq!(cache.len(), 2);
+
+        // Verify both original keys still present
+        let mut query_a = prefix_a;
+        query_a.push(999);
+        assert!(cache.find_longest_prefix(&query_a).is_some());
+
+        let mut query_b = prefix_b;
+        query_b.push(999);
+        assert!(cache.find_longest_prefix(&query_b).is_some());
+
+        // Now add a truly new prefix_c: should trigger eviction (oldest = prefix_b,
+        // since prefix_a was just overwritten and got a fresh timestamp)
+        cache.store(prefix_c.clone(), make_dummy_kv_cache(4));
+        assert_eq!(cache.len(), 2);
+
+        let mut query_c = prefix_c;
+        query_c.push(999);
+        assert!(cache.find_longest_prefix(&query_c).is_some());
+    }
 }

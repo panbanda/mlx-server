@@ -511,3 +511,108 @@ fn extract_eos_tokens(model_dir: &Path) -> Vec<u32> {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::check_stop_sequences;
+
+    #[test]
+    fn test_single_stop_sequence_found() {
+        let text = "Hello world, goodbye!";
+        let stops = vec!["goodbye".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("Hello world, ".to_owned()));
+    }
+
+    #[test]
+    fn test_no_stop_sequence_match() {
+        let text = "Hello world";
+        let stops = vec!["goodbye".to_owned(), "farewell".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_empty_stop_sequences_list() {
+        let text = "Hello world";
+        let stops: Vec<String> = vec![];
+        let result = check_stop_sequences(text, &stops);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_empty_text() {
+        let text = "";
+        let stops = vec!["hello".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_stop_sequence_at_beginning() {
+        let text = "STOP rest of text";
+        let stops = vec!["STOP".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some(String::new()));
+    }
+
+    #[test]
+    fn test_stop_sequence_at_end() {
+        let text = "Hello world END";
+        let stops = vec!["END".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("Hello world ".to_owned()));
+    }
+
+    #[test]
+    fn test_multiple_stop_sequences_earliest_wins() {
+        let text = "aaa bbb ccc ddd";
+        // "ccc" appears at position 8, "bbb" at position 4
+        // "bbb" should win because it appears earlier, regardless of array order
+        let stops = vec!["ccc".to_owned(), "bbb".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("aaa ".to_owned()));
+    }
+
+    #[test]
+    fn test_multiple_stop_sequences_earliest_wins_reverse_order() {
+        let text = "aaa bbb ccc ddd";
+        let stops = vec!["bbb".to_owned(), "ccc".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("aaa ".to_owned()));
+    }
+
+    #[test]
+    fn test_overlapping_stop_sequences_prefix() {
+        // "ab" is a prefix of "abc". "ab" appears first at position 0.
+        let text = "abc def";
+        let stops = vec!["abc".to_owned(), "ab".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some(String::new()));
+    }
+
+    #[test]
+    fn test_stop_sequence_appears_multiple_times() {
+        let text = "before stop middle stop after";
+        let stops = vec!["stop".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("before ".to_owned()));
+    }
+
+    #[test]
+    fn test_stop_sequence_is_entire_text() {
+        let text = "STOP";
+        let stops = vec!["STOP".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some(String::new()));
+    }
+
+    #[test]
+    fn test_stop_sequence_with_newlines() {
+        let text = "line one\nline two\nline three";
+        let stops = vec!["\n".to_owned()];
+        let result = check_stop_sequences(text, &stops);
+        assert_eq!(result, Some("line one".to_owned()));
+    }
+}

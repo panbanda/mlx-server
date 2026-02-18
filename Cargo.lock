@@ -1400,6 +1400,7 @@ dependencies = [
  "chrono",
  "clap",
  "governor",
+ "http-body-util",
  "mlx-engine",
  "mlx-models",
  "serde",

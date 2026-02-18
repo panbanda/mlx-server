@@ -190,4 +190,92 @@ I've requested the weather."#;
         assert!(result.text.is_empty());
         assert!(result.tool_calls.is_empty());
     }
+
+    #[test]
+    fn test_invalid_json_preserves_original_tags() {
+        let input = "<tool_call>\nnot valid json\n</tool_call>";
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
+        assert!(result.text.contains("</tool_call>"));
+        assert!(result.text.contains("not valid json"));
+    }
+
+    #[test]
+    fn test_mix_of_valid_and_invalid_tool_calls() {
+        let input = r#"<tool_call>
+{"name": "good_tool", "arguments": {"key": "value"}}
+</tool_call>
+<tool_call>
+this is not json
+</tool_call>
+<tool_call>
+{"name": "another_good", "arguments": {}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+
+        // Two valid tool calls extracted
+        assert_eq!(result.tool_calls.len(), 2);
+        assert_eq!(result.tool_calls.first().unwrap().name, "good_tool");
+        assert_eq!(result.tool_calls.get(1).unwrap().name, "another_good");
+
+        // Invalid one preserved as raw text with tags
+        assert!(result.text.contains("<tool_call>"));
+        assert!(result.text.contains("this is not json"));
+        assert!(result.text.contains("</tool_call>"));
+    }
+
+    #[test]
+    fn test_valid_json_but_missing_name_preserved_as_raw() {
+        // Valid JSON object but no "name" field -- should be treated as malformed
+        let input = r#"<tool_call>
+{"arguments": {"key": "value"}, "description": "no name field"}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
+        assert!(result.text.contains("</tool_call>"));
+        assert!(result.text.contains("no name field"));
+    }
+
+    #[test]
+    fn test_valid_json_array_not_object_preserved_as_raw() {
+        // Valid JSON but an array, not an object
+        let input = "<tool_call>\n[1, 2, 3]\n</tool_call>";
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
+        assert!(result.text.contains("[1, 2, 3]"));
+        assert!(result.text.contains("</tool_call>"));
+    }
+
+    #[test]
+    fn test_valid_json_name_is_not_string_preserved_as_raw() {
+        // "name" present but is a number, not a string
+        let input = r#"<tool_call>
+{"name": 42, "arguments": {}}
+</tool_call>"#;
+        let result = parse_tool_calls(input);
+        assert!(result.tool_calls.is_empty());
+        assert!(result.text.contains("<tool_call>"));
+        assert!(result.text.contains("</tool_call>"));
+    }
+
+    #[test]
+    fn test_text_between_multiple_tool_calls() {
+        let input = r#"Before first.
+<tool_call>
+{"name": "tool_a", "arguments": {}}
+</tool_call>
+Middle text.
+<tool_call>
+{"name": "tool_b", "arguments": {}}
+</tool_call>
+After last."#;
+        let result = parse_tool_calls(input);
+        assert_eq!(result.tool_calls.len(), 2);
+        assert!(result.text.contains("Before first."));
+        assert!(result.text.contains("Middle text."));
+        assert!(result.text.contains("After last."));
+    }
 }
