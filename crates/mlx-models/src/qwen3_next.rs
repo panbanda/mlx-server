@@ -450,6 +450,12 @@ struct SparseMoeBlock {
 
 impl SparseMoeBlock {
     fn new(args: &Qwen3NextModelArgs, ql: i32, qb: i32) -> Result<Self, Exception> {
+        if args.num_experts <= 0 {
+            return Err(Exception::custom("num_experts must be > 0"));
+        }
+        if args.num_experts_per_tok <= 0 {
+            return Err(Exception::custom("num_experts_per_tok must be > 0"));
+        }
         if args.num_experts_per_tok > args.num_experts {
             return Err(Exception::custom(
                 "num_experts_per_tok must be <= num_experts",
@@ -1266,6 +1272,32 @@ mod tests {
         args.num_experts_per_tok = 4; // top_k == num_experts is fine
         let result = SparseMoeBlock::new(&args, 64, 4);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_sparse_moe_rejects_zero_num_experts() {
+        let mut args = minimal_qwen3_next_args();
+        args.num_experts = 0;
+        let result = SparseMoeBlock::new(&args, 64, 4);
+        assert!(result.is_err(), "Should reject num_experts == 0");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("num_experts"),
+            "Expected error about num_experts, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_sparse_moe_rejects_zero_num_experts_per_tok() {
+        let mut args = minimal_qwen3_next_args();
+        args.num_experts_per_tok = 0;
+        let result = SparseMoeBlock::new(&args, 64, 4);
+        assert!(result.is_err(), "Should reject num_experts_per_tok == 0");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("num_experts_per_tok"),
+            "Expected error about num_experts_per_tok, got: {msg}"
+        );
     }
 
     /// Minimal args for tests that only care about MoE fields.
