@@ -279,4 +279,33 @@ mod tests {
         let id = generate_request_id();
         assert!(id.starts_with("chatcmpl-"));
     }
+
+    #[test]
+    fn test_convert_messages_with_tool_calls() {
+        let msgs = vec![ChatCompletionMessage {
+            role: "assistant".to_owned(),
+            content: None,
+            tool_calls: Some(vec![ToolCall {
+                id: "call_1".to_owned(),
+                r#type: "function".to_owned(),
+                function: ToolCallFunction {
+                    name: "get_weather".to_owned(),
+                    arguments: r#"{"city":"NYC"}"#.to_owned(),
+                },
+            }]),
+            tool_call_id: None,
+        }];
+        let converted = convert_messages(&msgs);
+        assert_eq!(converted.len(), 1);
+        let tool_calls = converted.first().and_then(|m| m.tool_calls.as_ref());
+        assert!(tool_calls.is_some());
+        let calls = tool_calls.unwrap();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn test_convert_messages_empty_list() {
+        let result = convert_messages(&[]);
+        assert!(result.is_empty());
+    }
 }

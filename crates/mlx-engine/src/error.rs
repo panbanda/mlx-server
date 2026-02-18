@@ -17,3 +17,27 @@ pub enum EngineError {
     #[error("Generation error: {0}")]
     Generation(String),
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_engine_error_display_tokenization() {
+        let err = EngineError::Tokenization("bad token".to_owned());
+        assert!(err.to_string().contains("bad token"));
+    }
+
+    #[test]
+    fn test_engine_error_display_template() {
+        let err = EngineError::Template("syntax error".to_owned());
+        assert!(err.to_string().contains("syntax error"));
+    }
+
+    #[test]
+    fn test_engine_error_display_generation() {
+        let err = EngineError::Generation("out of memory".to_owned());
+        assert!(err.to_string().contains("out of memory"));
+    }
+}

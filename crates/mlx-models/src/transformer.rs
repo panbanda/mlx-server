@@ -729,4 +729,36 @@ mod tests {
         let args: ModelArgs = serde_json::from_str(json).unwrap();
         assert!(args.checked_head_dim().is_err());
     }
+
+    #[test]
+    fn test_qkv_bias_for_qwen3() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 2048,
+            "num_hidden_layers": 28,
+            "intermediate_size": 8960,
+            "num_attention_heads": 16,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 32768
+        }"#;
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert!(args.qkv_bias());
+    }
+
+    #[test]
+    fn test_load_model_args_missing_file_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_model_args(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_load_model_args_invalid_json_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "not json").unwrap();
+        let result = load_model_args(dir.path());
+        assert!(result.is_err());
+    }
 }

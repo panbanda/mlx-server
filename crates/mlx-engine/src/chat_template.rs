@@ -146,4 +146,83 @@ mod tests {
             .unwrap();
         assert_eq!(result, r#""hello""#);
     }
+
+    #[test]
+    fn test_invalid_template_syntax_returns_error() {
+        let result = ChatTemplateRenderer::new("{%- invalid syntax %}}}");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_apply_without_generation_prompt() {
+        let template = r#"{%- for message in messages %}
+<|im_start|>{{ message.role }}
+{{ message.content }}<|im_end|>
+{%- endfor %}
+{%- if add_generation_prompt %}
+<|im_start|>assistant
+{%- endif %}"#;
+
+        let renderer = ChatTemplateRenderer::new(template).unwrap();
+        let messages = vec![ChatMessage {
+            role: "user".to_owned(),
+            content: "Hello!".to_owned(),
+            tool_calls: None,
+        }];
+
+        let result = renderer.apply(&messages, None, false).unwrap();
+        assert!(!result.contains("<|im_start|>assistant"));
+    }
+
+    #[test]
+    fn test_apply_empty_messages() {
+        let template = r#"{%- for message in messages %}
+<|im_start|>{{ message.role }}
+{{ message.content }}<|im_end|>
+{%- endfor %}"#;
+
+        let renderer = ChatTemplateRenderer::new(template).unwrap();
+        let result = renderer.apply(&[], None, false).unwrap();
+        assert!(!result.contains("<|im_start|>"));
+    }
+
+    #[test]
+    fn test_apply_with_tools() {
+        let template = r#"{%- for message in messages %}
+{{ message.content }}
+{%- endfor %}
+{%- if tools %}
+TOOLS:{{ tools | length }}
+{%- endif %}"#;
+
+        let renderer = ChatTemplateRenderer::new(template).unwrap();
+        let messages = vec![ChatMessage {
+            role: "user".to_owned(),
+            content: "Hi".to_owned(),
+            tool_calls: None,
+        }];
+        let tools = vec![serde_json::json!({"type": "function", "function": {"name": "test"}})];
+
+        let result = renderer.apply(&messages, Some(&tools), false).unwrap();
+        assert!(result.contains("TOOLS:1"));
+    }
+
+    #[test]
+    fn test_from_model_dir_no_template_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ChatTemplateRenderer::from_model_dir(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_model_dir_tokenizer_config_no_chat_template_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"model_type": "qwen2"}"#,
+        )
+        .unwrap();
+        let result = ChatTemplateRenderer::from_model_dir(dir.path());
+        assert!(result.is_err());
+    }
 }

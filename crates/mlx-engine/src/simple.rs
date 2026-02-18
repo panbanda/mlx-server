@@ -615,4 +615,55 @@ mod tests {
         let result = check_stop_sequences(text, &stops);
         assert_eq!(result, Some("line one".to_owned()));
     }
+
+    #[test]
+    fn test_extract_eos_tokens_single_number() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": 151643}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert_eq!(result, vec![151643]);
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_array() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": [151643, 151645]}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert_eq!(result, vec![151643, 151645]);
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_missing_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen2"}"#).unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_unexpected_type() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("config.json"),
+            r#"{"eos_token_id": "string"}"#,
+        )
+        .unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_extract_eos_tokens_missing_config_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = super::extract_eos_tokens(dir.path());
+        assert!(result.is_empty());
+    }
 }

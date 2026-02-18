@@ -450,4 +450,84 @@ mod tests {
         assert!(json.contains("embedding"));
         assert!(json.contains("0.1"));
     }
+
+    #[test]
+    fn test_stop_sequence_into_vec_single() {
+        let stop = StopSequence::Single("END".to_owned());
+        assert_eq!(stop.into_vec(), vec!["END"]);
+    }
+
+    #[test]
+    fn test_stop_sequence_into_vec_multiple() {
+        let stop = StopSequence::Multiple(vec!["a".to_owned(), "b".to_owned()]);
+        assert_eq!(stop.into_vec(), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_stop_sequence_extract_none() {
+        let result = StopSequence::extract(None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_stop_sequence_extract_some_single() {
+        let result = StopSequence::extract(Some(StopSequence::Single("x".to_owned())));
+        assert_eq!(result, vec!["x"]);
+    }
+
+    #[test]
+    fn test_stop_sequence_multiple_deserialization() {
+        let json = r#"{"model": "m", "messages": [], "stop": ["a", "b"]}"#;
+        let req: ChatCompletionRequest = serde_json::from_str(json).unwrap();
+        assert!(matches!(req.stop, Some(StopSequence::Multiple(_))));
+    }
+
+    #[test]
+    fn test_chat_completion_chunk_serialization() {
+        let chunk = ChatCompletionChunk {
+            id: "chatcmpl-123".to_owned(),
+            object: "chat.completion.chunk",
+            created: 1234567890,
+            model: "test".to_owned(),
+            choices: vec![ChatCompletionChunkChoice {
+                index: 0,
+                delta: ChatCompletionDelta {
+                    role: Some("assistant".to_owned()),
+                    content: Some("Hi".to_owned()),
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(json.contains("chat.completion.chunk"));
+    }
+
+    #[test]
+    fn test_completion_chunk_serialization() {
+        let chunk = CompletionChunk {
+            id: "cmpl-123".to_owned(),
+            object: "text_completion",
+            created: 1234567890,
+            model: "test".to_owned(),
+            choices: vec![CompletionChunkChoice {
+                index: 0,
+                text: "hello".to_owned(),
+                finish_reason: None,
+            }],
+        };
+        let json = serde_json::to_string(&chunk).unwrap();
+        assert!(json.contains("text_completion"));
+    }
+
+    #[test]
+    fn test_chat_completion_delta_skips_none_fields() {
+        let delta = ChatCompletionDelta {
+            role: None,
+            content: None,
+            tool_calls: None,
+        };
+        let json = serde_json::to_string(&delta).unwrap();
+        assert_eq!(json, "{}");
+    }
 }

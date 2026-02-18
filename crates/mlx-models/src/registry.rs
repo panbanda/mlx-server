@@ -34,4 +34,40 @@ mod tests {
         assert!(!is_supported("gpt2"));
         assert!(!is_supported("unknown"));
     }
+
+    #[test]
+    fn test_detect_model_type_missing_config_returns_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_detect_model_type_missing_model_type_field() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"vocab_size": 32000}"#).unwrap();
+        let result = detect_model_type(dir.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("Unsupported model"));
+    }
+
+    #[test]
+    fn test_detect_model_type_valid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), r#"{"model_type": "qwen2"}"#).unwrap();
+        let result = detect_model_type(dir.path()).unwrap();
+        assert_eq!(result, "qwen2");
+    }
+
+    #[test]
+    fn test_is_supported_empty_string() {
+        assert!(!is_supported(""));
+    }
+
+    #[test]
+    fn test_is_supported_case_sensitive() {
+        assert!(!is_supported("Qwen2"));
+        assert!(!is_supported("LLAMA"));
+    }
 }

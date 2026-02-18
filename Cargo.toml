@@ -54,8 +54,10 @@ serde_json = "1"
 tokenizers = { version = "0.22", features = ["http"] }
 minijinja = { version = "2", features = ["loader"] }
 
-# CLI
+# CLI + Configuration
 clap = { version = "4", features = ["derive"] }
+figment = { version = "0.10", features = ["env"] }
+directories = "6"
 
 # Observability
 tracing = "0.1"

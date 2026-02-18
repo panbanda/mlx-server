@@ -19,3 +19,4 @@ tracing.workspace = true
 tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
+tempfile = "3"

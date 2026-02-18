@@ -154,4 +154,19 @@ mod tests {
         assert_eq!(embedding.len(), 384);
         assert!(embedding.iter().all(|&v| v == 0.0));
     }
+
+    #[test]
+    fn test_compute_token_embedding_single_token() {
+        let embedding = compute_token_embedding(&[42]);
+        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 0.001);
+        assert!(embedding.iter().any(|&v| v != 0.0));
+    }
+
+    #[test]
+    fn test_token_hash_to_index_stays_in_bounds() {
+        assert!(token_hash_to_index(0, 384) < 384);
+        assert!(token_hash_to_index(u32::MAX, 384) < 384);
+        assert!(token_hash_to_index(12345, 384) < 384);
+    }
 }

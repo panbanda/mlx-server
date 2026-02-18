@@ -179,7 +179,7 @@ pub struct MessageStopEvent {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
@@ -262,5 +262,48 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains("message_start"));
+    }
+
+    #[test]
+    fn test_anthropic_content_tool_use_block() {
+        let json = r#"{"role": "assistant", "content": [{"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "London"}}]}"#;
+        let msg: AnthropicMessage = serde_json::from_str(json).unwrap();
+        if let AnthropicContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            assert!(
+                matches!(&blocks[0], ContentBlock::ToolUse { name, .. } if name == "get_weather")
+            );
+        } else {
+            panic!("Expected Blocks variant");
+        }
+    }
+
+    #[test]
+    fn test_anthropic_content_tool_result_block() {
+        let json = r#"{"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu_1", "content": "72 degrees"}]}"#;
+        let msg: AnthropicMessage = serde_json::from_str(json).unwrap();
+        if let AnthropicContent::Blocks(blocks) = &msg.content {
+            assert_eq!(blocks.len(), 1);
+            assert!(
+                matches!(&blocks[0], ContentBlock::ToolResult { tool_use_id, content } if tool_use_id == "tu_1" && content == "72 degrees")
+            );
+        } else {
+            panic!("Expected Blocks variant");
+        }
+    }
+
+    #[test]
+    fn test_anthropic_request_with_stop_sequences() {
+        let json = r#"{
+            "model": "test",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 100,
+            "stop_sequences": ["END", "STOP"]
+        }"#;
+        let req: CreateMessageRequest = serde_json::from_str(json).unwrap();
+        let stops = req.stop_sequences.unwrap();
+        assert_eq!(stops.len(), 2);
+        assert_eq!(stops[0], "END");
+        assert_eq!(stops[1], "STOP");
     }
 }

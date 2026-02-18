@@ -76,4 +76,93 @@ mod tests {
             Some("Be helpful")
         );
     }
+
+    #[test]
+    fn test_anthropic_messages_to_engine_without_system() {
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Text("Hello".to_owned()),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.role.as_str()), Some("user"));
+    }
+
+    #[test]
+    fn test_anthropic_messages_to_engine_content_blocks() {
+        use crate::types::anthropic::ContentBlock;
+
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Hello ".to_owned(),
+                },
+                ContentBlock::Text {
+                    text: "World".to_owned(),
+                },
+            ]),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result.first().map(|m| m.content.as_str()),
+            Some("Hello World")
+        );
+    }
+
+    #[test]
+    fn test_anthropic_messages_to_engine_mixed_blocks_filters_non_text() {
+        use crate::types::anthropic::ContentBlock;
+
+        let messages = vec![AnthropicMessage {
+            role: "user".to_owned(),
+            content: AnthropicContent::Blocks(vec![
+                ContentBlock::Text {
+                    text: "Hello".to_owned(),
+                },
+                ContentBlock::ToolUse {
+                    id: "tu_1".to_owned(),
+                    name: "get_weather".to_owned(),
+                    input: serde_json::json!({}),
+                },
+                ContentBlock::ToolResult {
+                    tool_use_id: "tu_1".to_owned(),
+                    content: "72 degrees".to_owned(),
+                },
+            ]),
+        }];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some("Hello"));
+    }
+
+    #[test]
+    fn test_anthropic_messages_to_engine_empty_messages() {
+        let result = anthropic_messages_to_engine(&[], None);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_anthropic_messages_to_engine_multiple_messages() {
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".to_owned(),
+                content: AnthropicContent::Text("First".to_owned()),
+            },
+            AnthropicMessage {
+                role: "assistant".to_owned(),
+                content: AnthropicContent::Text("Second".to_owned()),
+            },
+            AnthropicMessage {
+                role: "user".to_owned(),
+                content: AnthropicContent::Text("Third".to_owned()),
+            },
+        ];
+        let result = anthropic_messages_to_engine(&messages, None);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result.first().map(|m| m.content.as_str()), Some("First"));
+        assert_eq!(result.get(1).map(|m| m.content.as_str()), Some("Second"));
+        assert_eq!(result.get(2).map(|m| m.content.as_str()), Some("Third"));
+    }
 }

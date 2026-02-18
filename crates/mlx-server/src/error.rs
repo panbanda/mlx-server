@@ -147,4 +147,18 @@ mod tests {
         assert_eq!(message, "Internal server error");
         assert!(!message.contains("0xFF"));
     }
+
+    #[tokio::test]
+    async fn test_engine_template_error_masked() {
+        let engine_err =
+            mlx_engine::error::EngineError::Template("template parse failed".to_owned());
+        let error = ServerError::Engine(engine_err);
+        let resp = error.into_response();
+        let (status, body) = response_status_and_body(resp).await;
+
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        let message = body["error"]["message"].as_str().unwrap();
+        assert_eq!(message, "Internal server error");
+        assert!(!message.contains("template parse failed"));
+    }
 }
