@@ -33,7 +33,9 @@ pub enum AnyCache {
 
 /// Unified model wrapper dispatching to the correct architecture.
 pub enum AnyModel {
+    /// Standard transformer architectures: Llama, Mistral, Qwen2/2.5, Qwen3.
     Transformer(Model),
+    /// Qwen3-Next hybrid SSM/attention architecture with mixture-of-experts.
     Qwen3Next(Qwen3NextCausalLM),
 }
 
@@ -123,7 +125,9 @@ fn sample_top_p(logits: &Array, top_p: f32) -> Result<Array, Exception> {
 /// Weight map index from model.safetensors.index.json.
 #[derive(Debug, Clone, Deserialize)]
 pub struct WeightMapIndex {
+    /// Model metadata (e.g. total parameter count, dtype).
     pub metadata: HashMap<String, Value>,
+    /// Maps weight tensor name to the shard filename that contains it.
     pub weight_map: HashMap<String, String>,
 }
 
