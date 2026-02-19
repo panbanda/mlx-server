@@ -12,25 +12,15 @@ Runs quantized LLMs locally using the Metal GPU with no Python runtime.
 ## Requirements
 
 - macOS 14+ on Apple Silicon (M1/M2/M3/M4)
-- Rust 1.85.0+
-- Xcode Command Line Tools (for Metal compiler)
 
 ## Install
-
-**Homebrew:**
 
 ```bash
 brew tap panbanda/mlx-server
 brew install mlx-server
 ```
 
-**From source:**
-
-```bash
-cargo install mlx-server
-```
-
-**Build locally:**
+**Build from source** (requires Rust 1.85.0+ and Xcode Command Line Tools):
 
 ```bash
 cargo build --release
