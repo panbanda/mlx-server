@@ -3,7 +3,7 @@
 [![CI](https://github.com/panbanda/mlx-server/actions/workflows/ci.yml/badge.svg)](https://github.com/panbanda/mlx-server/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/panbanda/mlx-server)](https://github.com/panbanda/mlx-server/releases)
 [![Crates.io](https://img.shields.io/crates/v/mlx-server)](https://crates.io/crates/mlx-server)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![License](https://img.shields.io/badge/license-MIT-blue)](#license)
 
 OpenAI and Anthropic-compatible inference server for Apple Silicon, built in Rust on top of [mlx-rs](https://github.com/oxideai/mlx-rs).
 
@@ -105,15 +105,6 @@ curl http://localhost:8000/v1/chat/completions \
 | Qwen3 | `qwen3` | Qwen3 |
 | Qwen3-Next | `qwen3_next` | Qwen3-Coder (hybrid SSM/attention + MoE) |
 
-## Project Structure
-
-```
-crates/
-  mlx-models/    Model architectures and weight loading
-  mlx-engine/    Inference engine (tokenization, generation, prompt caching)
-  mlx-server/    HTTP server (Axum routes, OpenAI/Anthropic adapters, config)
-```
-
 ## Development
 
 ```bash
@@ -125,4 +116,4 @@ cargo fmt --check
 
 ## License
 
-MIT OR Apache-2.0
+MIT
