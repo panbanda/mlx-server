@@ -110,19 +110,31 @@ jobs:
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
 
       - name: Publish mlx-models
-        run: cargo publish -p mlx-models --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          out=$(cargo publish -p mlx-models --token ${{ secrets.CARGO_REGISTRY_TOKEN }} 2>&1) && echo "$out" || {
+            echo "$out"
+            echo "$out" | grep -q "already exists" || exit 1
+          }
 
       - name: Wait for crates.io to index mlx-models
         run: sleep 30
 
       - name: Publish mlx-engine
-        run: cargo publish -p mlx-engine --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          out=$(cargo publish -p mlx-engine --token ${{ secrets.CARGO_REGISTRY_TOKEN }} 2>&1) && echo "$out" || {
+            echo "$out"
+            echo "$out" | grep -q "already exists" || exit 1
+          }
 
       - name: Wait for crates.io to index mlx-engine
         run: sleep 30
 
       - name: Publish mlx-server
-        run: cargo publish -p mlx-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          out=$(cargo publish -p mlx-server --token ${{ secrets.CARGO_REGISTRY_TOKEN }} 2>&1) && echo "$out" || {
+            echo "$out"
+            echo "$out" | grep -q "already exists" || exit 1
+          }
 
   homebrew:
     name: Update Homebrew Formula
