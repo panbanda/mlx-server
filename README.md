@@ -1,33 +1,36 @@
 # mlx-server
 
+[![CI](https://github.com/panbanda/mlx-server/actions/workflows/ci.yml/badge.svg)](https://github.com/panbanda/mlx-server/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/panbanda/mlx-server)](https://github.com/panbanda/mlx-server/releases)
+[![Crates.io](https://img.shields.io/crates/v/mlx-server)](https://crates.io/crates/mlx-server)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+
 OpenAI and Anthropic-compatible inference server for Apple Silicon, built in Rust on top of [mlx-rs](https://github.com/oxideai/mlx-rs).
 
 Runs quantized LLMs locally using the Metal GPU with no Python runtime.
 
-## Supported Models
-
-| Architecture | `model_type` | Examples |
-|---|---|---|
-| LLaMA | `llama` | Llama 3, Llama 3.1, CodeLlama |
-| Mistral | `mistral` | Mistral 7B, Mixtral (dense only) |
-| Qwen2 | `qwen2` | Qwen2, Qwen2.5 |
-| Qwen3 | `qwen3` | Qwen3 |
-| Qwen3-Next | `qwen3_next` | Qwen3-Coder (hybrid SSM/attention + MoE) |
-
-Models must be in **MLX safetensors format**. Pre-quantized weights are available from the [mlx-community](https://huggingface.co/mlx-community) org on HuggingFace. To convert your own:
-
-```bash
-pip install mlx-lm
-mlx_lm.convert --hf-path meta-llama/Llama-3.1-8B-Instruct -q --upload-repo your-org/Llama-3.1-8B-4bit-mlx
-```
-
-## Prerequisites
+## Requirements
 
 - macOS 14+ on Apple Silicon (M1/M2/M3/M4)
 - Rust 1.85.0+
 - Xcode Command Line Tools (for Metal compiler)
 
-## Build
+## Install
+
+**Homebrew:**
+
+```bash
+brew tap panbanda/mlx-server
+brew install mlx-server
+```
+
+**From source:**
+
+```bash
+cargo install mlx-server
+```
+
+**Build locally:**
 
 ```bash
 cargo build --release
@@ -36,14 +39,21 @@ cargo build --release
 ## Usage
 
 ```bash
-# Point at a local MLX model directory
+# Local MLX model directory
 mlx-server --model ~/.cache/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit
 
-# Or use a HuggingFace model ID (downloads on first use)
+# HuggingFace model ID (downloads on first use)
 mlx-server --model mlx-community/Llama-3.1-8B-Instruct-4bit
 ```
 
-### Configuration
+Models must be in **MLX safetensors format**. Pre-quantized weights are available from [mlx-community](https://huggingface.co/mlx-community) on HuggingFace. To convert your own:
+
+```bash
+pip install mlx-lm
+mlx_lm.convert --hf-path meta-llama/Llama-3.1-8B-Instruct -q --upload-repo your-org/Llama-3.1-8B-4bit-mlx
+```
+
+## Configuration
 
 Settings are resolved in order (later wins): defaults, environment variables, CLI flags.
 
@@ -79,9 +89,9 @@ Log level is controlled via `RUST_LOG` (e.g., `RUST_LOG=debug`).
 
 ### Health
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/health` | GET | Server health check |
+| Endpoint | Method |
+|---|---|
+| `/health` | GET |
 
 ### Example
 
@@ -95,36 +105,33 @@ curl http://localhost:8000/v1/chat/completions \
   }'
 ```
 
-With authentication:
+## Supported Models
 
-```bash
-mlx-server --api-key YOUR_API_KEY
-
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -d '{"model": "llama", "messages": [{"role": "user", "content": "Hello!"}]}'
-```
+| Architecture | `model_type` | Examples |
+|---|---|---|
+| LLaMA | `llama` | Llama 3, Llama 3.1, CodeLlama |
+| Mistral | `mistral` | Mistral 7B, Mixtral (dense only) |
+| Qwen2 | `qwen2` | Qwen2, Qwen2.5 |
+| Qwen3 | `qwen3` | Qwen3 |
+| Qwen3-Next | `qwen3_next` | Qwen3-Coder (hybrid SSM/attention + MoE) |
 
 ## Project Structure
 
-```text
+```
 crates/
-  mlx-models/    Model architectures (transformer, qwen3_next) and weight loading
-  mlx-engine/    Inference engine (tokenization, generation loop, prompt caching)
+  mlx-models/    Model architectures and weight loading
+  mlx-engine/    Inference engine (tokenization, generation, prompt caching)
   mlx-server/    HTTP server (Axum routes, OpenAI/Anthropic adapters, config)
 ```
 
 ## Development
 
 ```bash
-cargo check                              # Type check
-cargo test -- --test-threads=1           # Run tests (single-threaded for Metal)
-cargo clippy                             # Lint
-cargo fmt --check                        # Format check
+cargo check
+cargo test -- --test-threads=1   # single-threaded to avoid Metal GPU teardown issues
+cargo clippy
+cargo fmt --check
 ```
-
-Tests must run single-threaded (`--test-threads=1`) to avoid Metal GPU teardown issues.
 
 ## License
 
