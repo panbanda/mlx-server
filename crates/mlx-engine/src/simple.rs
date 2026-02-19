@@ -67,10 +67,7 @@ impl SimpleEngine {
     /// Load a model and tokenizer from a directory.
     pub fn load(dir: impl AsRef<Path>) -> Result<Self, EngineError> {
         let model_dir = dir.as_ref();
-        let model_name = model_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".to_owned());
+        let model_name = derive_model_name(model_dir);
 
         tracing::info!(model_dir = %model_dir.display(), "Loading model");
 
@@ -509,6 +506,40 @@ fn check_stop_sequences(text: &str, stop_sequences: &[String]) -> Option<String>
     earliest.map(|pos| text.get(..pos).unwrap_or_default().to_owned())
 }
 
+/// Derive a human-readable model name from a directory path.
+///
+/// Detects HuggingFace cache paths (`models--<org>--<name>/snapshots/<hash>`)
+/// and extracts `<org>/<name>` instead of using the hash as the name.
+/// Falls back to the directory's file name.
+fn derive_model_name(model_dir: &Path) -> String {
+    // HuggingFace cache: .../models--<org>--<name>/snapshots/<hash>
+    if let (Some(leaf), Some(parent)) = (model_dir.file_name(), model_dir.parent()) {
+        let leaf_str = leaf.to_string_lossy();
+        if let (Some(snapshots), Some(grandparent)) = (parent.file_name(), parent.parent()) {
+            if snapshots.to_string_lossy() == "snapshots" {
+                let gp_name = grandparent
+                    .file_name()
+                    .map(|n| n.to_string_lossy())
+                    .unwrap_or_default();
+                if let Some(rest) = gp_name.strip_prefix("models--") {
+                    // "org--model-name" -> "org/model-name"
+                    if let Some(sep) = rest.find("--") {
+                        let org = &rest[..sep];
+                        let model = &rest[sep + 2..];
+                        return format!("{org}/{model}");
+                    }
+                    return rest.to_string();
+                }
+            }
+        }
+        // Not an HF cache path -- use the leaf directory name
+        if !leaf_str.is_empty() {
+            return leaf_str.to_string();
+        }
+    }
+    "unknown".to_owned()
+}
+
 /// Extract EOS token IDs from config.json.
 fn extract_eos_tokens(model_dir: &Path) -> Vec<u32> {
     let config_path = model_dir.join("config.json");
@@ -553,11 +584,38 @@ fn extract_eos_tokens(model_dir: &Path) -> Vec<u32> {
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
-    use super::check_stop_sequences;
+    use super::{check_stop_sequences, derive_model_name};
+    use std::path::Path;
 
     /// Write a config.json file into the given directory with the provided JSON content.
     fn write_config(dir: &std::path::Path, json: &str) {
         std::fs::write(dir.join("config.json"), json).unwrap();
+    }
+
+    #[test]
+    fn test_derive_model_name_plain_directory() {
+        let name = derive_model_name(Path::new("/home/user/models/Llama-3.2-1B"));
+        assert_eq!(name, "Llama-3.2-1B");
+    }
+
+    #[test]
+    fn test_derive_model_name_hf_cache_path() {
+        let path = "/Users/me/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5";
+        let name = derive_model_name(Path::new(path));
+        assert_eq!(name, "mlx-community/Qwen3-Coder-Next-4bit");
+    }
+
+    #[test]
+    fn test_derive_model_name_hf_cache_no_org() {
+        let path = "/cache/models--MyModel/snapshots/abc123";
+        let name = derive_model_name(Path::new(path));
+        assert_eq!(name, "MyModel");
+    }
+
+    #[test]
+    fn test_derive_model_name_relative_path() {
+        let name = derive_model_name(Path::new("./my-model"));
+        assert_eq!(name, "my-model");
     }
 
     /// Create a temp dir, write config.json with the given content, and return

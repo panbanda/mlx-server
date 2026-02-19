@@ -55,7 +55,14 @@ impl AnyModel {
 
     pub fn make_cache(&self) -> AnyCache {
         match self {
-            AnyModel::Transformer(_) => AnyCache::KV(Vec::new()),
+            AnyModel::Transformer(m) => {
+                let n_layers = m.args.num_hidden_layers as usize;
+                AnyCache::KV(
+                    (0..n_layers)
+                        .map(|_| Some(cache::ConcatKeyValueCache::new()))
+                        .collect(),
+                )
+            }
             AnyModel::Qwen3Next(m) => AnyCache::Hybrid(m.make_cache()),
         }
     }
