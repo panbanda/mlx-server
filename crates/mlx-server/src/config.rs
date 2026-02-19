@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 #[command(
     author,
     version,
-    about = "MLX Server - OpenAI-compatible inference server for Apple Silicon"
+    about = "MLX Server - OpenAI and Anthropic-compatible inference server for Apple Silicon"
 )]
 struct CliArgs {
     /// Path to a model directory or HuggingFace model ID. May be repeated to serve multiple models.
