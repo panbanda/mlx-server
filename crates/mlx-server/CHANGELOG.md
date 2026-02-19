@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.5...mlx-server-v0.1.6) (2026-02-19)
+
+
+### Bug Fixes
+
+* correct CLI about text to include Anthropic compatibility ([40fc5c5](https://github.com/panbanda/mlx-server/commit/40fc5c5bd9e337ca4a5b90fe2e97542099caa0ab))
+
 ## [0.1.5](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.4...mlx-server-v0.1.5) (2026-02-18)
 
 
