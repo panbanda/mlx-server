@@ -592,6 +592,8 @@ mod tests {
         std::fs::write(dir.join("config.json"), json).unwrap();
     }
 
+    // --- derive_model_name tests ---
+
     #[test]
     fn test_derive_model_name_plain_directory() {
         let name = derive_model_name(Path::new("/home/user/models/Llama-3.2-1B"));

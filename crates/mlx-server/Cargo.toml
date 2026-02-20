@@ -35,3 +35,4 @@ http-body-util = "0.1"
 tokio = { version = "1", features = ["macros", "rt"] }
 tower = { version = "0.5", features = ["util"] }
 hyper = "1"
+tempfile = "3.25.0"

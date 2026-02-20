@@ -1459,6 +1459,7 @@ dependencies = [
  "mlx-models",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tokio-stream",
