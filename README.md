@@ -29,12 +29,17 @@ cargo build --release
 ## Usage
 
 ```bash
-# Local MLX model directory
-mlx-server --model ~/.cache/huggingface/hub/models--mlx-community--Llama-3.1-8B-Instruct-4bit
-
-# HuggingFace model ID (downloads on first use)
+# HuggingFace model ID (resolved from local HF cache)
 mlx-server --model mlx-community/Llama-3.1-8B-Instruct-4bit
+
+# Local MLX model directory
+mlx-server --model ~/dev/models/My-Custom-Model
+
+# Multiple models
+mlx-server --model mlx-community/Llama-3.1-8B-Instruct-4bit --model mlx-community/Qwen3-Coder-Next-4bit
 ```
+
+The `--model` flag accepts HuggingFace model IDs (`org/name`) or local directory paths. HuggingFace IDs are resolved from the local cache at `~/.cache/huggingface/hub/`. Download models first with `huggingface-cli download`.
 
 Models must be in **MLX safetensors format**. Pre-quantized weights are available from [mlx-community](https://huggingface.co/mlx-community) on HuggingFace. To convert your own:
 
@@ -49,7 +54,7 @@ Settings are resolved in order (later wins): defaults, environment variables, CL
 
 | CLI Flag | Env Variable | Default | Description |
 |---|---|---|---|
-| `--model` | `MLX_SERVER_MODEL` | *(required)* | Path to local MLX model directory or HF model ID |
+| `--model` | `MLX_SERVER_MODELS` | *(required)* | Model path or HF model ID (repeatable for multi-model) |
 | `--host` | `MLX_SERVER_HOST` | `0.0.0.0` | Bind address |
 | `--port` | `MLX_SERVER_PORT` | `8000` | Bind port |
 | `--max-tokens` | `MLX_SERVER_MAX_TOKENS` | `32768` | Default max generation tokens |
@@ -86,13 +91,17 @@ Log level is controlled via `RUST_LOG` (e.g., `RUST_LOG=debug`).
 ### Example
 
 ```bash
+# Chat completion (specify model by name)
 curl http://localhost:8000/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "llama-3.1-8b",
+    "model": "mlx-community/Llama-3.1-8B-Instruct-4bit",
     "messages": [{"role": "user", "content": "Hello!"}],
     "max_tokens": 256
   }'
+
+# List all loaded models
+curl http://localhost:8000/v1/models
 ```
 
 ## Supported Models

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use mlx_engine::simple::SimpleEngine;
 
-use mlx_server::{build_router, config::ServerConfig, state::AppState};
+use mlx_server::{build_router, config::ServerConfig, model_resolver, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,8 +19,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut engines = HashMap::new();
     for model_path in &config.models {
-        tracing::info!(model = %model_path, "Loading model");
-        let engine = SimpleEngine::load(model_path)?;
+        tracing::info!(model = %model_path, "Resolving model path");
+        let resolved = model_resolver::resolve(model_path)?;
+        tracing::info!(model = %model_path, resolved = %resolved.display(), "Loading model");
+        let engine = SimpleEngine::load(&resolved)?;
         let name = engine.model_name().to_owned();
         tracing::info!(model_name = %name, "Model loaded");
         if engines.insert(name.clone(), Arc::new(engine)).is_some() {

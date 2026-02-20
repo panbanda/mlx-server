@@ -56,7 +56,10 @@ impl AnyModel {
     pub fn make_cache(&self) -> AnyCache {
         match self {
             AnyModel::Transformer(m) => {
-                let n_layers = m.args.num_hidden_layers as usize;
+                // Validated positive at Model::new; infallible for positive i32.
+                let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
+                    return AnyCache::KV(vec![]);
+                };
                 AnyCache::KV(
                     (0..n_layers)
                         .map(|_| Some(cache::ConcatKeyValueCache::new()))
