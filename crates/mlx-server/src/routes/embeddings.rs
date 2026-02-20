@@ -89,20 +89,20 @@ fn compute_token_embedding(token_ids: &[u32]) -> Vec<f32> {
 
     for &token_id in token_ids {
         // Distribute token influence across dimensions using simple hash
-        let dim_idx = token_hash_to_index(token_id.wrapping_mul(2654435761), DIM);
+        let dim_idx = token_hash_to_index(token_id.wrapping_mul(2_654_435_761), DIM);
         if let Some(val) = embedding.get_mut(dim_idx) {
             *val += 1.0;
         }
 
         // Secondary dimension for richer signal
-        let dim_idx2 = token_hash_to_index(token_id.wrapping_mul(2246822519), DIM);
+        let dim_idx2 = token_hash_to_index(token_id.wrapping_mul(2_246_822_519), DIM);
         if let Some(val) = embedding.get_mut(dim_idx2) {
             *val += 0.5;
         }
     }
 
     // L2 normalize
-    let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
     if norm > 0.0 {
         for val in &mut embedding {
             *val /= norm;
@@ -133,7 +133,7 @@ mod tests {
     #[test]
     fn test_compute_token_embedding_normalized() {
         let embedding = compute_token_embedding(&[100, 200, 300]);
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
     }
 
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn test_compute_token_embedding_single_token() {
         let embedding = compute_token_embedding(&[42]);
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
         assert!(embedding.iter().any(|&v| v != 0.0));
     }
@@ -177,7 +177,7 @@ mod tests {
     fn test_compute_token_embedding_very_large_token_ids() {
         let embedding = compute_token_embedding(&[u32::MAX, u32::MAX - 1, u32::MAX - 2]);
         assert_eq!(embedding.len(), 384);
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
     }
 
@@ -185,7 +185,7 @@ mod tests {
     fn test_compute_token_embedding_duplicate_token_ids() {
         let embedding = compute_token_embedding(&[42, 42, 42, 42]);
         assert_eq!(embedding.len(), 384);
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
         // Duplicate tokens all hash to the same bins, so after L2 normalization
         // the direction is identical to a single token. Verify that the
@@ -201,7 +201,7 @@ mod tests {
         let token_ids: Vec<u32> = (0..1000).collect();
         let embedding = compute_token_embedding(&token_ids);
         assert_eq!(embedding.len(), 384);
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
+        let norm = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
     }
 

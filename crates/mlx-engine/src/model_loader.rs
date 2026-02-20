@@ -13,7 +13,7 @@ pub struct ModelConfig {
 
 impl ModelConfig {
     /// Detect model type and create a config from a model directory.
-    pub fn from_dir(dir: impl AsRef<Path>) -> Result<Self, EngineError> {
+    pub fn from_dir<P: AsRef<Path>>(dir: P) -> Result<Self, EngineError> {
         let model_dir = dir.as_ref().to_path_buf();
         let model_type = registry::detect_model_type(&model_dir)?;
 
@@ -31,7 +31,7 @@ impl ModelConfig {
 }
 
 /// Load a model from a directory, auto-detecting the architecture.
-pub fn load_model(model_dir: impl AsRef<Path>) -> Result<AnyModel, EngineError> {
+pub fn load_model<P: AsRef<Path>>(model_dir: P) -> Result<AnyModel, EngineError> {
     let config = ModelConfig::from_dir(&model_dir)?;
 
     match config.model_type.as_str() {
@@ -51,7 +51,7 @@ pub fn load_model(model_dir: impl AsRef<Path>) -> Result<AnyModel, EngineError> 
 }
 
 /// Load a tokenizer from a model directory.
-pub fn load_tokenizer(model_dir: impl AsRef<Path>) -> Result<tokenizers::Tokenizer, EngineError> {
+pub fn load_tokenizer<P: AsRef<Path>>(model_dir: P) -> Result<tokenizers::Tokenizer, EngineError> {
     shared_load_tokenizer(model_dir).map_err(|e| EngineError::Tokenization(e.to_string()))
 }
 
@@ -61,8 +61,8 @@ mod tests {
     use super::*;
     use mlx_models::error::ModelError;
 
-    /// Create a temp dir with a config.json containing the given model_type and
-    /// return the ModelConfig result.
+    /// Create a temp dir with a config.json containing the given `model_type` and
+    /// return the `ModelConfig` result.
     fn config_for_model(model_type: &str) -> (tempfile::TempDir, Result<ModelConfig, EngineError>) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
@@ -75,7 +75,7 @@ mod tests {
     }
 
     /// Write arbitrary content to config.json in a temp dir and return
-    /// the ModelConfig result.
+    /// the `ModelConfig` result.
     fn config_from_raw(content: &str) -> (tempfile::TempDir, Result<ModelConfig, EngineError>) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("config.json"), content).unwrap();

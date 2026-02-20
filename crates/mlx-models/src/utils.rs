@@ -70,10 +70,10 @@ where
         .ok_or_else(|| Exception::custom("Hidden state must have at least 2 dimensions"))?;
 
     if T > 1 {
-        let mut offset = 0;
-        if let Some(c) = cache.first().and_then(|c| c.as_ref()) {
-            offset = c.offset();
-        }
+        let offset = cache
+            .first()
+            .and_then(|c| c.as_ref())
+            .map_or(0, KeyValueCache::offset);
 
         if use_array {
             create_causal_mask(T, Some(offset))

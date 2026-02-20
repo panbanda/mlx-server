@@ -30,6 +30,7 @@ use crate::state::SharedState;
 type SharedRateLimiter = Arc<RateLimiter<String, DefaultKeyedStateStore<String>, DefaultClock>>;
 
 /// Build the Axum router with all routes and middleware.
+#[allow(clippy::needless_pass_by_value)]
 pub fn build_router(
     state: SharedState,
     timeout_secs: f64,
@@ -86,11 +87,10 @@ async fn rate_limit_middleware(
     let key = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0.ip().to_string())
-        .unwrap_or_else(|| "unknown".to_owned());
+        .map_or_else(|| "unknown".to_owned(), |ci| ci.0.ip().to_string());
 
     match limiter.check_key(&key) {
-        Ok(_) => Ok(next.run(req).await),
+        Ok(()) => Ok(next.run(req).await),
         Err(_) => Err(StatusCode::TOO_MANY_REQUESTS),
     }
 }

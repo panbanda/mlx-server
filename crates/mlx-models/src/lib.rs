@@ -27,7 +27,7 @@ pub use transformer::{Model, ModelArgs};
 pub enum AnyCache {
     /// Standard KV cache for transformer models (Qwen2/Llama/Mistral).
     KV(Vec<Option<cache::ConcatKeyValueCache>>),
-    /// Hybrid KV+SSM cache for qwen3_next.
+    /// Hybrid KV+SSM cache for `qwen3_next`.
     Hybrid(Vec<Option<LayerCache>>),
 }
 
@@ -47,15 +47,17 @@ impl AnyModel {
         cache: &mut AnyCache,
     ) -> Result<Array, Exception> {
         match (self, cache) {
-            (AnyModel::Transformer(m), AnyCache::KV(c)) => m.forward(inputs, mask, c),
-            (AnyModel::Qwen3Next(m), AnyCache::Hybrid(c)) => m.forward(inputs, mask, c),
-            _ => Err(Exception::custom("Model/cache type mismatch")),
+            (Self::Transformer(m), AnyCache::KV(c)) => m.forward(inputs, mask, c),
+            (Self::Qwen3Next(m), AnyCache::Hybrid(c)) => m.forward(inputs, mask, c),
+            (Self::Transformer(_), AnyCache::Hybrid(_)) | (Self::Qwen3Next(_), AnyCache::KV(_)) => {
+                Err(Exception::custom("Model/cache type mismatch"))
+            }
         }
     }
 
     pub fn make_cache(&self) -> AnyCache {
         match self {
-            AnyModel::Transformer(m) => {
+            Self::Transformer(m) => {
                 // Validated positive at Model::new; infallible for positive i32.
                 let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
                     tracing::warn!(
@@ -70,7 +72,7 @@ impl AnyModel {
                         .collect(),
                 )
             }
-            AnyModel::Qwen3Next(m) => AnyCache::Hybrid(m.make_cache()),
+            Self::Qwen3Next(m) => AnyCache::Hybrid(m.make_cache()),
         }
     }
 }
@@ -146,7 +148,7 @@ pub struct WeightMapIndex {
 }
 
 /// Load a tokenizer from a model directory.
-pub fn load_tokenizer(model_dir: impl AsRef<Path>) -> Result<tokenizers::Tokenizer, ModelError> {
+pub fn load_tokenizer<P: AsRef<Path>>(model_dir: P) -> Result<tokenizers::Tokenizer, ModelError> {
     let file = model_dir.as_ref().join("tokenizer.json");
     tokenizers::Tokenizer::from_file(file)
         .map_err(|e| ModelError::Io(std::io::Error::other(e.to_string())))
@@ -228,6 +230,7 @@ fn collect_safetensors_files(model_path: &Path) -> Result<Vec<std::path::PathBuf
 ///
 /// MLX Python saves quantized weights as `layer.weight` but Rust mlx-rs
 /// QuantizedLinear/QuantizedEmbedding nest them as `layer.inner.weight`.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn remap_quantized_key(key: &str) -> Option<String> {
     if let Some(prefix) = key.strip_suffix(".weight") {
         Some(format!("{prefix}.inner.weight"))
@@ -443,7 +446,7 @@ mod tests {
         let cache = AnyCache::KV(vec![None, Some(cache::ConcatKeyValueCache::new())]);
         match &cache {
             AnyCache::KV(layers) => assert_eq!(layers.len(), 2),
-            _ => panic!("Expected KV variant"),
+            AnyCache::Hybrid(_) => panic!("Expected KV variant"),
         }
     }
 

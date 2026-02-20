@@ -22,7 +22,7 @@ use crate::{
     utils::{AttentionMask, create_attention_mask, scaled_dot_product_attention},
 };
 
-fn default_rope_theta() -> f32 {
+const fn default_rope_theta() -> f32 {
     10000.0
 }
 
@@ -74,7 +74,7 @@ impl ModelArgs {
         matches!(self.model_type.as_str(), "qwen2" | "qwen3")
     }
 
-    /// Head dimension, computed from hidden_size / num_attention_heads.
+    /// Head dimension, computed from `hidden_size / num_attention_heads`.
     ///
     /// Panics in debug builds if not evenly divisible.
     pub fn head_dim(&self) -> i32 {
@@ -491,14 +491,14 @@ pub struct Model {
 impl Model {
     pub fn new(args: ModelArgs) -> Result<Self, Exception> {
         let model = TransformerModel::new(&args)?;
-        let lm_head = if !args.tie_word_embeddings {
+        let lm_head = if args.tie_word_embeddings {
+            None
+        } else {
             Some(MaybeQuantized::Original(
                 nn::LinearBuilder::new(args.hidden_size, args.vocab_size)
                     .bias(false)
                     .build()?,
             ))
-        } else {
-            None
         };
 
         Ok(Self {
@@ -538,14 +538,14 @@ impl Model {
 // --- Loading ---
 
 /// Load model args from config.json.
-pub fn load_model_args(model_dir: impl AsRef<Path>) -> Result<ModelArgs, ModelError> {
+pub fn load_model_args<P: AsRef<Path>>(model_dir: P) -> Result<ModelArgs, ModelError> {
     let config_path = model_dir.as_ref().join("config.json");
     let file = std::fs::File::open(config_path)?;
     Ok(serde_json::from_reader(file)?)
 }
 
 /// Load a model from a directory containing safetensors + config.json.
-pub fn load_model(model_dir: impl AsRef<Path>) -> Result<Model, ModelError> {
+pub fn load_model<P: AsRef<Path>>(model_dir: P) -> Result<Model, ModelError> {
     let model_path = model_dir.as_ref();
 
     let args = load_model_args(model_path)?;
@@ -711,7 +711,7 @@ mod tests {
         }"#;
 
         let args: ModelArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.rope_theta, 10000.0);
+        assert!((args.rope_theta - 10000.0).abs() < f32::EPSILON);
         assert!(!args.tie_word_embeddings);
     }
 
@@ -740,7 +740,7 @@ mod tests {
     fn test_mistral_config_no_sliding_window() {
         let args = make_model_args("mistral", 2048, 32, 4, 32000, 22);
         assert!(args.sliding_window.is_none());
-        assert_eq!(args.rope_theta, 10000.0);
+        assert!((args.rope_theta - 10000.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -763,7 +763,7 @@ mod tests {
 
     #[test]
     fn test_qkv_bias_for_qwen3() {
-        let args = make_model_args("qwen3", 2048, 16, 2, 151936, 28);
+        let args = make_model_args("qwen3", 2048, 16, 2, 151_936, 28);
         assert!(args.qkv_bias());
     }
 
@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn test_model_args_missing_optional_fields_use_defaults() {
         let args = default_model_args();
-        assert_eq!(args.rope_theta, 10000.0);
+        assert!((args.rope_theta - 10000.0).abs() < f32::EPSILON);
         assert!(!args.tie_word_embeddings);
         assert!(!args.use_sliding_window);
         assert!(args.sliding_window.is_none());
@@ -882,8 +882,7 @@ mod tests {
     fn write_model_config(model_type: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
         let config = format!(
-            r#"{{"model_type":"{}","hidden_size":256,"num_hidden_layers":2,"intermediate_size":512,"num_attention_heads":4,"rms_norm_eps":1e-06,"vocab_size":1000,"num_key_value_heads":2,"max_position_embeddings":512}}"#,
-            model_type
+            r#"{{"model_type":"{model_type}","hidden_size":256,"num_hidden_layers":2,"intermediate_size":512,"num_attention_heads":4,"rms_norm_eps":1e-06,"vocab_size":1000,"num_key_value_heads":2,"max_position_embeddings":512}}"#
         );
         std::fs::write(dir.path().join("config.json"), config).unwrap();
         dir

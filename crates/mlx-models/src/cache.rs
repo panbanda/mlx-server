@@ -89,15 +89,13 @@ impl KeyValueCache for ConcatKeyValueCache {
         keys: Array,
         values: Array,
     ) -> Result<(Array, Array), Exception> {
-        match (self.keys.take(), self.values.take()) {
-            (Some(existing_keys), Some(existing_values)) => {
-                self.keys = Some(concatenate_axis(&[existing_keys, keys], -2)?);
-                self.values = Some(concatenate_axis(&[existing_values, values], -2)?);
-            }
-            _ => {
-                self.keys = Some(keys);
-                self.values = Some(values);
-            }
+        if let (Some(existing_keys), Some(existing_values)) = (self.keys.take(), self.values.take())
+        {
+            self.keys = Some(concatenate_axis(&[existing_keys, keys], -2)?);
+            self.values = Some(concatenate_axis(&[existing_values, values], -2)?);
+        } else {
+            self.keys = Some(keys);
+            self.values = Some(values);
         }
 
         let key_shape = self
@@ -129,7 +127,7 @@ mod tests {
     use super::*;
     use mlx_rs::Array;
 
-    /// Create a zero-filled KV pair with shape [1, n_heads, seq_len, head_dim].
+    /// Create a zero-filled KV pair with shape `[1, n_heads, seq_len, head_dim]`.
     fn make_kv_pair(seq_len: i32, head_dim: i32) -> (Array, Array) {
         let shape = [1, 2, seq_len, head_dim];
         (

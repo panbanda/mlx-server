@@ -1,10 +1,10 @@
-//! Router-level integration tests using tower::ServiceExt::oneshot.
+//! Router-level integration tests using `tower::ServiceExt::oneshot`.
 //!
 //! These tests exercise the HTTP layer (routing, middleware, content negotiation)
 //! without requiring a real MLX engine. Tests that would need the engine to
 //! process a request are marked #[ignore] with an explanation.
 //!
-//! We construct an AppState with a real engine only where unavoidable. For most
+//! We construct an `AppState` with a real engine only where unavoidable. For most
 //! tests, we can verify behavior that occurs before the engine is invoked:
 //! - Health endpoint (no engine needed)
 //! - Malformed JSON rejection (Axum rejects before handler runs)
@@ -12,7 +12,13 @@
 //! - Unknown routes (404)
 //! - Bearer auth rejection (middleware rejects before handler runs)
 
-#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::tests_outside_test_module,
+    clippy::needless_pass_by_value
+)]
 
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;

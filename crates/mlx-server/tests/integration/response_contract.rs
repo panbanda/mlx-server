@@ -1,9 +1,14 @@
 //! Tests for response serialization contracts.
 //!
-//! Verifies that response types serialize to JSON matching the OpenAI and
+//! Verifies that response types serialize to JSON matching the `OpenAI` and
 //! Anthropic API specifications (correct field names, types, and structure).
 
-#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::tests_outside_test_module
+)]
 
 use mlx_server::types::anthropic::{
     AnthropicUsage, ContentBlockDeltaEvent, ContentBlockResponse, ContentBlockStartEvent,
@@ -18,7 +23,7 @@ use mlx_server::types::openai::{
     EmbeddingUsage, ModelList, ModelObject, ToolCall, ToolCallFunction,
 };
 
-fn make_usage(prompt: u32, completion: u32) -> CompletionUsage {
+const fn make_usage(prompt: u32, completion: u32) -> CompletionUsage {
     CompletionUsage {
         prompt_tokens: prompt,
         completion_tokens: completion,
@@ -26,7 +31,7 @@ fn make_usage(prompt: u32, completion: u32) -> CompletionUsage {
     }
 }
 
-fn make_anthropic_usage(input: u32, output: u32) -> AnthropicUsage {
+const fn make_anthropic_usage(input: u32, output: u32) -> AnthropicUsage {
     AnthropicUsage {
         input_tokens: input,
         output_tokens: output,
@@ -41,7 +46,7 @@ fn make_chat_chunk(
     ChatCompletionChunk {
         id: id.to_owned(),
         object: "chat.completion.chunk",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![ChatCompletionChunkChoice {
             index: 0,
@@ -89,7 +94,7 @@ fn chat_completion_response_has_required_fields() {
     let resp = ChatCompletionResponse {
         id: "chatcmpl-abc123".to_owned(),
         object: "chat.completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test-model".to_owned(),
         choices: vec![ChatCompletionChoice {
             index: 0,
@@ -108,7 +113,7 @@ fn chat_completion_response_has_required_fields() {
 
     assert_eq!(json["id"], "chatcmpl-abc123");
     assert_eq!(json["object"], "chat.completion");
-    assert_eq!(json["created"], 1700000000);
+    assert_eq!(json["created"], 1_700_000_000);
     assert_eq!(json["model"], "test-model");
     assert_eq!(json["choices"][0]["index"], 0);
     assert_eq!(json["choices"][0]["message"]["role"], "assistant");
@@ -211,7 +216,7 @@ fn completion_response_has_required_fields() {
     let resp = CompletionResponse {
         id: "cmpl-abc".to_owned(),
         object: "text_completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![CompletionChoice {
             index: 0,
@@ -233,7 +238,7 @@ fn completion_chunk_has_correct_object_type() {
     let chunk = CompletionChunk {
         id: "cmpl-abc".to_owned(),
         object: "text_completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![CompletionChunkChoice {
             index: 0,
@@ -259,7 +264,7 @@ fn model_list_serialization() {
         data: vec![ModelObject {
             id: "my-model".to_owned(),
             object: "model",
-            created: 1700000000,
+            created: 1_700_000_000,
             owned_by: "local".to_owned(),
         }],
     };
@@ -459,7 +464,7 @@ fn completion_chunk_serializes_as_valid_sse_data() {
     let chunk = CompletionChunk {
         id: "cmpl-test".to_owned(),
         object: "text_completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![CompletionChunkChoice {
             index: 0,
@@ -484,7 +489,7 @@ fn chat_completion_response_with_tool_calls_in_choices() {
     let resp = ChatCompletionResponse {
         id: "chatcmpl-tools".to_owned(),
         object: "chat.completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![ChatCompletionChoice {
             index: 0,
@@ -523,7 +528,7 @@ fn completion_response_with_multiple_choices() {
     let resp = CompletionResponse {
         id: "cmpl-multi".to_owned(),
         object: "text_completion",
-        created: 1700000000,
+        created: 1_700_000_000,
         model: "test".to_owned(),
         choices: vec![
             CompletionChoice {

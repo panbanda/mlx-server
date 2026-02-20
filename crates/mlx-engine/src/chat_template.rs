@@ -12,14 +12,14 @@ pub struct ChatMessage {
     pub tool_calls: Option<Vec<serde_json::Value>>,
 }
 
-/// Renders chat messages using a Jinja2 template (HuggingFace format).
+/// Renders chat messages using a Jinja2 template (`HuggingFace` format).
 pub struct ChatTemplateRenderer {
     env: Environment<'static>,
 }
 
 impl ChatTemplateRenderer {
     /// Create a renderer from a Jinja2 template string.
-    pub fn new(template_source: impl Into<String>) -> Result<Self, EngineError> {
+    pub fn new<S: Into<String>>(template_source: S) -> Result<Self, EngineError> {
         let mut env = Environment::new();
         env.add_filter("tojson", tojson_filter);
         env.add_template_owned("chat".to_owned(), template_source.into())
@@ -27,7 +27,7 @@ impl ChatTemplateRenderer {
         Ok(Self { env })
     }
 
-    /// Load template from a model directory (chat_template.jinja or tokenizer_config.json).
+    /// Load template from a model directory (`chat_template.jinja` or `tokenizer_config.json`).
     pub fn from_model_dir(model_dir: &std::path::Path) -> Result<Self, EngineError> {
         // Prefer standalone chat_template.jinja
         let jinja_path = model_dir.join("chat_template.jinja");
@@ -66,18 +66,21 @@ impl ChatTemplateRenderer {
             .get_template("chat")
             .map_err(|e| EngineError::Template(e.to_string()))?;
 
-        let mut context = minijinja::context! {
-            messages => messages,
-            add_generation_prompt => add_generation_prompt,
-        };
-
-        if let Some(tool_list) = tools {
-            context = minijinja::context! {
-                messages => messages,
-                tools => tool_list,
-                add_generation_prompt => add_generation_prompt,
-            };
-        }
+        let context = tools.map_or_else(
+            || {
+                minijinja::context! {
+                    messages => messages,
+                    add_generation_prompt => add_generation_prompt,
+                }
+            },
+            |tool_list| {
+                minijinja::context! {
+                    messages => messages,
+                    tools => tool_list,
+                    add_generation_prompt => add_generation_prompt,
+                }
+            },
+        );
 
         tmpl.render(context)
             .map_err(|e| EngineError::Template(e.to_string()))
@@ -85,6 +88,7 @@ impl ChatTemplateRenderer {
 }
 
 /// Custom tojson filter for minijinja (used by HF chat templates).
+#[allow(clippy::needless_pass_by_value)]
 fn tojson_filter(value: Value) -> Result<String, minijinja::Error> {
     let serialized = serde_json::to_string(&value).map_err(|e| {
         minijinja::Error::new(
@@ -119,15 +123,15 @@ mod tests {
         env
     }
 
-    const CHATML_TEMPLATE: &str = r#"{%- for message in messages %}
+    const CHATML_TEMPLATE: &str = r"{%- for message in messages %}
 <|im_start|>{{ message.role }}
 {{ message.content }}<|im_end|>
 {%- endfor %}
 {%- if add_generation_prompt %}
 <|im_start|>assistant
-{%- endif %}"#;
+{%- endif %}";
 
-    const TOJSON_TEMPLATE: &str = r#"{{ value | tojson }}"#;
+    const TOJSON_TEMPLATE: &str = r"{{ value | tojson }}";
 
     #[test]
     fn test_simple_chatml_template() {
@@ -168,10 +172,10 @@ mod tests {
 
     #[test]
     fn test_apply_empty_messages() {
-        let template = r#"{%- for message in messages %}
+        let template = r"{%- for message in messages %}
 <|im_start|>{{ message.role }}
 {{ message.content }}<|im_end|>
-{%- endfor %}"#;
+{%- endfor %}";
         let renderer = ChatTemplateRenderer::new(template).unwrap();
         let result = renderer.apply(&[], None, false).unwrap();
         assert!(!result.contains("<|im_start|>"));
@@ -179,12 +183,12 @@ mod tests {
 
     #[test]
     fn test_apply_with_tools() {
-        let template = r#"{%- for message in messages %}
+        let template = r"{%- for message in messages %}
 {{ message.content }}
 {%- endfor %}
 {%- if tools %}
 TOOLS:{{ tools | length }}
-{%- endif %}"#;
+{%- endif %}";
 
         let renderer = ChatTemplateRenderer::new(template).unwrap();
         let tools = vec![serde_json::json!({"type": "function", "function": {"name": "test"}})];
@@ -216,7 +220,7 @@ TOOLS:{{ tools | length }}
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("chat_template.jinja"),
-            r#"{%- for message in messages %}{{ message.content }}{%- endfor %}"#,
+            r"{%- for message in messages %}{{ message.content }}{%- endfor %}",
         )
         .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
@@ -275,7 +279,7 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_apply_with_assistant_role() {
-        let template = r#"{%- for message in messages %}<|{{ message.role }}|>{{ message.content }}{%- endfor %}"#;
+        let template = r"{%- for message in messages %}<|{{ message.role }}|>{{ message.content }}{%- endfor %}";
         let renderer = ChatTemplateRenderer::new(template).unwrap();
         let messages = vec![msg("user", "What is 2+2?"), msg("assistant", "4")];
         let result = renderer.apply(&messages, None, false).unwrap();
@@ -284,7 +288,7 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_apply_with_tool_calls_field() {
-        let template = r#"{%- for message in messages %}{{ message.role }}:{{ message.content }}{%- if message.tool_calls %} [tools]{%- endif %}{%- endfor %}"#;
+        let template = r"{%- for message in messages %}{{ message.role }}:{{ message.content }}{%- if message.tool_calls %} [tools]{%- endif %}{%- endfor %}";
         let renderer = ChatTemplateRenderer::new(template).unwrap();
         let messages = vec![ChatMessage {
             role: "assistant".to_owned(),
@@ -339,8 +343,7 @@ TOOLS:{{ tools | length }}
 
     #[test]
     fn test_template_rendering_error_undefined_variable() {
-        let renderer =
-            ChatTemplateRenderer::new(r#"{{ undefined_variable.nested_field }}"#).unwrap();
+        let renderer = ChatTemplateRenderer::new(r"{{ undefined_variable.nested_field }}").unwrap();
         assert!(renderer.apply(&[msg("user", "hi")], None, false).is_err());
     }
 }

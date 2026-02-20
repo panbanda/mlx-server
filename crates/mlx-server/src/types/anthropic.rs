@@ -82,7 +82,7 @@ pub struct AnthropicUsage {
     pub output_tokens: u32,
 }
 
-/// POST /v1/messages/count_tokens request.
+/// POST `/v1/messages/count_tokens` request.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CountTokensRequest {
     #[allow(dead_code)] // Required for API deserialization compatibility
@@ -94,7 +94,7 @@ pub struct CountTokensRequest {
     pub tools: Option<Vec<serde_json::Value>>,
 }
 
-/// POST /v1/messages/count_tokens response.
+/// POST `/v1/messages/count_tokens` response.
 #[derive(Debug, Clone, Serialize)]
 pub struct CountTokensResponse {
     pub input_tokens: u32,
@@ -205,7 +205,7 @@ mod tests {
         }
     }
 
-    /// Deserialize an AnthropicMessage from a JSON string.
+    /// Deserialize an `AnthropicMessage` from a JSON string.
     fn parse_message(json: &str) -> AnthropicMessage {
         serde_json::from_str(json).unwrap()
     }
@@ -218,7 +218,7 @@ mod tests {
         }
     }
 
-    /// Deserialize a CreateMessageRequest with an extra field merged in.
+    /// Deserialize a `CreateMessageRequest` with an extra field merged in.
     fn anthropic_request_with(extra_field: &str) -> CreateMessageRequest {
         let json = format!(
             r#"{{"model": "test", "messages": [{{"role": "user", "content": "Hello"}}], "max_tokens": 100, {extra_field}}}"#,

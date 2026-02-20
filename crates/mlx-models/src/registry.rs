@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::error::ModelError;
 
 /// Detect the model architecture from config.json's `model_type` field.
-pub fn detect_model_type(model_dir: impl AsRef<Path>) -> Result<String, ModelError> {
+pub fn detect_model_type<P: AsRef<Path>>(model_dir: P) -> Result<String, ModelError> {
     let config_path = model_dir.as_ref().join("config.json");
     let file = std::fs::File::open(config_path)?;
     let config: serde_json::Value = serde_json::from_reader(file)?;
@@ -11,7 +11,7 @@ pub fn detect_model_type(model_dir: impl AsRef<Path>) -> Result<String, ModelErr
     config
         .get("model_type")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_owned())
+        .map(ToOwned::to_owned)
         .ok_or_else(|| ModelError::UnsupportedModel("missing model_type in config.json".into()))
 }
 
@@ -132,7 +132,7 @@ mod tests {
 
     #[test]
     fn test_detect_model_type_empty_json_object() {
-        let dir = write_config(r#"{}"#);
+        let dir = write_config(r"{}");
         let err = detect_model_type(dir.path()).unwrap_err();
         assert!(err.to_string().contains("Unsupported model"));
     }

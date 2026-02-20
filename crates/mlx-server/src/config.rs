@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
     about = "MLX Server - OpenAI and Anthropic-compatible inference server for Apple Silicon"
 )]
 struct CliArgs {
-    /// Path to a model directory or HuggingFace model ID. May be repeated to serve multiple models.
+    /// Path to a model directory or `HuggingFace` model ID. May be repeated to serve multiple models.
     #[arg(long = "model", action = clap::ArgAction::Append)]
     models: Vec<String>,
 
@@ -79,7 +79,7 @@ impl ServerConfig {
         let cli = CliArgs::parse();
 
         let mut figment = Figment::new()
-            .merge(Serialized::defaults(ServerConfig::default()))
+            .merge(Serialized::defaults(Self::default()))
             .merge(Env::prefixed("MLX_SERVER_"));
 
         // Overlay CLI args (only non-empty values)
@@ -145,12 +145,12 @@ impl ServerConfig {
 mod tests {
     use super::*;
 
-    /// Returns a figment with ServerConfig defaults already merged.
+    /// Returns a figment with `ServerConfig` defaults already merged.
     fn test_figment() -> Figment {
         Figment::new().merge(Serialized::defaults(ServerConfig::default()))
     }
 
-    /// Creates a ServerConfig with a single key overridden.
+    /// Creates a `ServerConfig` with a single key overridden.
     fn config_with(key: &str, value: impl Serialize) -> ServerConfig {
         test_figment()
             .merge(Serialized::default(key, value))

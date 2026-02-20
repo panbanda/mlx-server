@@ -1,9 +1,9 @@
 //! Qwen3-Coder-Next model implementation.
 //!
-//! Hybrid SSM/attention transformer with Mixture of Experts (MoE).
-//! Every `full_attention_interval`-th layer uses full attention (Qwen3NextAttention),
-//! all other layers use GatedDeltaNet (SSM-like linear attention).
-//! All layers use Sparse MoE for the feed-forward block.
+//! Hybrid SSM/attention transformer with Mixture of Experts (`MoE`).
+//! Every `full_attention_interval`-th layer uses full attention (`Qwen3NextAttention`),
+//! all other layers use `GatedDeltaNet` (SSM-like linear attention).
+//! All layers use Sparse `MoE` for the feed-forward block.
 
 use std::path::Path;
 
@@ -29,15 +29,15 @@ use crate::{
 // Config
 // ---------------------------------------------------------------------------
 
-fn default_full_attention_interval() -> i32 {
+const fn default_full_attention_interval() -> i32 {
     4
 }
 
-fn default_rope_theta() -> f32 {
+const fn default_rope_theta() -> f32 {
     10000.0
 }
 
-fn default_partial_rotary_factor() -> f32 {
+const fn default_partial_rotary_factor() -> f32 {
     1.0
 }
 
@@ -261,7 +261,7 @@ impl Qwen3NextAttention {
             i16::try_from(head_dim).map_err(|_| Exception::custom("head_dim out of i16 range"))?,
         );
         // partial_rotary_factor * head_dim is always a small positive integer (e.g. 64)
-        #[allow(clippy::as_conversions)]
+        #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
         let partial_dim = (rope_dim_f32 * args.partial_rotary_factor).round() as i32;
 
         Ok(Self {
@@ -416,7 +416,7 @@ impl SwitchMlpWeights {
     }
 
     /// Apply one expert's MLP to input x.
-    /// expert_idx is a 0-d or 1-element array indexing into the stacked weights.
+    /// `expert_idx` is a 0-d or 1-element array indexing into the stacked weights.
     fn forward_expert(&self, x: &Array, expert_idx: &Array) -> Result<Array, Exception> {
         let gate_w = self.gate_proj.weight.take_axis(expert_idx, 0)?;
         let gate_s = self.gate_proj.scales.take_axis(expert_idx, 0)?;
@@ -599,7 +599,7 @@ impl SparseMoeBlock {
 // GatedDeltaNet (SSM-like linear attention)
 // ---------------------------------------------------------------------------
 
-/// Cache state for a GatedDeltaNet layer.
+/// Cache state for a `GatedDeltaNet` layer.
 #[derive(Debug, Clone)]
 pub struct ArraysCache {
     pub conv_state: Option<Array>,
@@ -608,7 +608,7 @@ pub struct ArraysCache {
 }
 
 impl ArraysCache {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             conv_state: None,
             ssm_state: None,
@@ -943,10 +943,10 @@ impl DecoderLayer {
         } else {
             None
         };
-        let self_attn = if !is_linear {
-            Some(Qwen3NextAttention::new(args, ql, qb)?)
-        } else {
+        let self_attn = if is_linear {
             None
+        } else {
+            Some(Qwen3NextAttention::new(args, ql, qb)?)
         };
 
         Ok(Self {
@@ -975,9 +975,8 @@ impl DecoderLayer {
                 .linear_attn
                 .as_mut()
                 .ok_or_else(|| Exception::custom("linear_attn missing on linear layer"))?;
-            let ssm_cache = match cache {
-                LayerCache::Arrays(c) => c,
-                _ => return Err(Exception::custom("Expected ArraysCache for linear layer")),
+            let LayerCache::Arrays(ssm_cache) = cache else {
+                return Err(Exception::custom("Expected ArraysCache for linear layer"));
             };
             attn.forward(&normed, mask, ssm_cache)?
         } else {
@@ -985,9 +984,8 @@ impl DecoderLayer {
                 .self_attn
                 .as_mut()
                 .ok_or_else(|| Exception::custom("self_attn missing on attention layer"))?;
-            let kv_cache = match cache {
-                LayerCache::KV(c) => c,
-                _ => return Err(Exception::custom("Expected KVCache for attention layer")),
+            let LayerCache::KV(kv_cache) = cache else {
+                return Err(Exception::custom("Expected KVCache for attention layer"));
             };
             attn.forward(&normed, mask, kv_cache)?
         };
@@ -1071,10 +1069,10 @@ impl Qwen3NextCausalLM {
         let qb = args.quantization.as_ref().map_or(4, |q| q.bits);
 
         let model = Qwen3NextInner::new(&args, ql, qb)?;
-        let lm_head = if !args.tie_word_embeddings {
-            Some(QLinear::new(ql, qb)?)
-        } else {
+        let lm_head = if args.tie_word_embeddings {
             None
+        } else {
+            Some(QLinear::new(ql, qb)?)
         };
 
         Ok(Self {
@@ -1132,14 +1130,14 @@ impl Qwen3NextCausalLM {
             let fa_idx = self.model.full_attention_interval - 1;
             let fa_idx_usize =
                 usize::try_from(fa_idx).map_err(|_| Exception::custom("fa_idx overflow"))?;
-            let offset = kv_cache
-                .get(fa_idx_usize)
-                .and_then(|c| c.as_ref())
-                .map(|c| match c {
-                    LayerCache::KV(kv) => kv.offset(),
-                    LayerCache::Arrays(a) => a.offset,
-                })
-                .unwrap_or(0);
+            let offset =
+                kv_cache
+                    .get(fa_idx_usize)
+                    .and_then(|c| c.as_ref())
+                    .map_or(0, |c| match c {
+                        LayerCache::KV(kv) => kv.offset(),
+                        LayerCache::Arrays(a) => a.offset,
+                    });
             Some(crate::utils::create_causal_mask(T, Some(offset))?)
         } else {
             None
@@ -1172,14 +1170,16 @@ impl Qwen3NextCausalLM {
 // ---------------------------------------------------------------------------
 
 /// Load model args from config.json.
-pub fn load_model_args(model_dir: impl AsRef<Path>) -> Result<Qwen3NextModelArgs, ModelError> {
+pub fn load_model_args<P: AsRef<Path>>(model_dir: P) -> Result<Qwen3NextModelArgs, ModelError> {
     let config_path = model_dir.as_ref().join("config.json");
     let file = std::fs::File::open(config_path)?;
     Ok(serde_json::from_reader(file)?)
 }
 
-/// Load a Qwen3Next model from a directory containing safetensors + config.json.
-pub fn load_qwen3_next_model(model_dir: impl AsRef<Path>) -> Result<Qwen3NextCausalLM, ModelError> {
+/// Load a `Qwen3Next` model from a directory containing safetensors + config.json.
+pub fn load_qwen3_next_model<P: AsRef<Path>>(
+    model_dir: P,
+) -> Result<Qwen3NextCausalLM, ModelError> {
     let model_path = model_dir.as_ref();
     let args = load_model_args(model_path)?;
 
@@ -1327,7 +1327,7 @@ mod tests {
         assert_sparse_moe_rejects(|a| a.num_experts_per_tok = 0, "num_experts_per_tok");
     }
 
-    /// Minimal args for tests that only care about MoE fields.
+    /// Minimal args for tests that only care about `MoE` fields.
     fn minimal_qwen3_next_args() -> Qwen3NextModelArgs {
         serde_json::from_str(
             r#"{
@@ -1352,7 +1352,7 @@ mod tests {
         .unwrap()
     }
 
-    /// Full args suitable for Qwen3NextCausalLM::new() validation tests.
+    /// Full args suitable for `Qwen3NextCausalLM::new()` validation tests.
     fn valid_causal_lm_args() -> Qwen3NextModelArgs {
         serde_json::from_str(
             r#"{
@@ -1424,11 +1424,11 @@ mod tests {
         let arrays = LayerCache::Arrays(ArraysCache::new());
         match &kv {
             LayerCache::KV(c) => assert_eq!(c.offset(), 0),
-            _ => panic!("Expected KV variant"),
+            LayerCache::Arrays(_) => panic!("Expected KV variant"),
         }
         match &arrays {
             LayerCache::Arrays(c) => assert_eq!(c.offset, 0),
-            _ => panic!("Expected Arrays variant"),
+            LayerCache::KV(_) => panic!("Expected Arrays variant"),
         }
     }
 
@@ -1448,8 +1448,8 @@ mod tests {
             "max_position_embeddings": 262144
         }"#;
         let args: Qwen3NextModelArgs = serde_json::from_str(json).unwrap();
-        assert_eq!(args.rope_theta, 10000.0);
-        assert_eq!(args.partial_rotary_factor, 1.0);
+        assert!((args.rope_theta - 10000.0).abs() < f32::EPSILON);
+        assert!((args.partial_rotary_factor - 1.0).abs() < f32::EPSILON);
         assert_eq!(args.full_attention_interval, 4);
         assert!(!args.tie_word_embeddings);
         assert!(!args.attention_bias);
@@ -1508,7 +1508,7 @@ mod tests {
         let result2 = swiglu(&gate2, &x2).unwrap();
         let val2: f32 = result2.item();
         assert!(
-            (val2 - 0.7310586).abs() < 1e-4,
+            (val2 - 0.731_058_6).abs() < 1e-4,
             "silu(1)*1 should be ~0.7311, got {val2}"
         );
 
@@ -1518,7 +1518,7 @@ mod tests {
         let result3 = swiglu(&gate3, &x3).unwrap();
         let val3: f32 = result3.item();
         assert!(
-            (val3 - (-0.5378828)).abs() < 1e-4,
+            (val3 - (-0.537_882_8)).abs() < 1e-4,
             "silu(-1)*2 should be ~-0.5379, got {val3}"
         );
     }

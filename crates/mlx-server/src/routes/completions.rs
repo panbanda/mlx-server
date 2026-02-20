@@ -91,6 +91,7 @@ async fn completions_non_streaming(
     })
 }
 
+#[allow(clippy::needless_pass_by_value)]
 fn completions_stream(
     state: SharedState,
     req: CompletionRequest,
@@ -123,7 +124,7 @@ fn completions_stream(
             temperature,
             top_p,
             &stop_sequences,
-            tx,
+            &tx,
         );
         if let Err(e) = result {
             tracing::error!(error = %e, "Generation error during streaming");

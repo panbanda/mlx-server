@@ -49,14 +49,14 @@ mod tests {
 
     #[test]
     fn test_model_list_single_entry() {
-        let data = model_objects_sorted(["only-model"].iter().copied());
+        let data = model_objects_sorted(std::iter::once("only-model"));
         assert_eq!(data.len(), 1);
         assert_eq!(data.first().map(|m| m.id.as_str()), Some("only-model"));
     }
 
     #[test]
     fn test_model_objects_have_correct_fields() {
-        let data = model_objects_sorted(["test-model"].iter().copied());
+        let data = model_objects_sorted(std::iter::once("test-model"));
         let obj = data.first().unwrap();
         assert_eq!(obj.object, "model");
         assert_eq!(obj.owned_by, "local");

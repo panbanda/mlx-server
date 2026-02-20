@@ -95,6 +95,7 @@ async fn create_message_non_streaming(
     })
 }
 
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn create_message_stream(
     state: SharedState,
     req: CreateMessageRequest,
@@ -130,7 +131,7 @@ fn create_message_stream(
             temperature,
             top_p,
             &stop_sequences,
-            tx,
+            &tx,
         );
         if let Err(e) = result {
             tracing::error!(error = %e, "Generation error during Anthropic streaming");

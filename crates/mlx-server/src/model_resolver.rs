@@ -3,20 +3,18 @@ use std::path::{Path, PathBuf};
 /// Resolve a model specifier to a concrete directory path.
 ///
 /// 1. If `path` is an existing directory, returns it directly.
-/// 2. If it looks like `org/name`, resolves from the HuggingFace cache
+/// 2. If it looks like `org/name`, resolves from the `HuggingFace` cache
 ///    (`~/.cache/huggingface/hub/models--org--name/snapshots/<hash>`).
 pub fn resolve(path: &str) -> Result<PathBuf, String> {
     let as_path = Path::new(path);
 
-    let expanded = if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
-            home.join(rest)
-        } else {
-            as_path.to_path_buf()
-        }
-    } else {
-        as_path.to_path_buf()
-    };
+    let expanded = path.strip_prefix("~/").map_or_else(
+        || as_path.to_path_buf(),
+        |rest| {
+            directories::BaseDirs::new()
+                .map_or_else(|| as_path.to_path_buf(), |d| d.home_dir().join(rest))
+        },
+    );
 
     if expanded.is_dir() {
         return Ok(expanded);
@@ -90,7 +88,7 @@ fn default_hf_cache() -> Option<PathBuf> {
 
 /// Testable env var resolution without reading actual environment.
 ///
-/// Resolution order matches the HuggingFace Python SDK:
+/// Resolution order matches the `HuggingFace` Python SDK:
 /// 1. `HF_HUB_CACHE`          (direct cache path)
 /// 2. `HUGGINGFACE_HUB_CACHE`  (legacy alias)
 /// 3. `HF_HOME` + `/hub`       (home override)

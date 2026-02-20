@@ -126,7 +126,7 @@ mod tests {
             prompt_tokens: 1,
             completion_tokens: 1,
         };
-        let debug_str = format!("{:?}", output);
+        let debug_str = format!("{output:?}");
         assert!(debug_str.contains("GenerationOutput"));
         assert!(debug_str.contains("hi"));
     }
@@ -140,7 +140,7 @@ mod tests {
             prompt_tokens: 5,
             completion_tokens: 10,
         };
-        let debug_str = format!("{:?}", output);
+        let debug_str = format!("{output:?}");
         assert!(debug_str.contains("StreamingOutput"));
         assert!(debug_str.contains("token"));
     }

@@ -1,7 +1,12 @@
-//! Tests that ServerError variants produce the correct HTTP status codes,
-//! response shapes, and content types per the OpenAI error contract.
+//! Tests that `ServerError` variants produce the correct HTTP status codes,
+//! response shapes, and content types per the `OpenAI` error contract.
 
-#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::tests_outside_test_module
+)]
 
 use axum::http::StatusCode;
 use axum::response::IntoResponse;

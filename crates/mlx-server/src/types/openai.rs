@@ -41,7 +41,7 @@ pub struct ChatCompletionMessage {
     pub tool_call_id: Option<String>,
 }
 
-/// A tool call in the OpenAI format.
+/// A tool call in the `OpenAI` format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -67,8 +67,8 @@ pub enum StopSequence {
 impl StopSequence {
     pub fn into_vec(self) -> Vec<String> {
         match self {
-            StopSequence::Single(s) => vec![s],
-            StopSequence::Multiple(v) => v,
+            Self::Single(s) => vec![s],
+            Self::Multiple(v) => v,
         }
     }
 
@@ -289,7 +289,7 @@ mod tests {
         ChatCompletionChunk {
             id: id.to_owned(),
             object: "chat.completion.chunk",
-            created: 1700000000,
+            created: 1_700_000_000,
             model: "test".to_owned(),
             choices: vec![ChatCompletionChunkChoice {
                 index: 0,
@@ -357,7 +357,7 @@ mod tests {
         let resp = ChatCompletionResponse {
             id: "chatcmpl-123".to_owned(),
             object: "chat.completion",
-            created: 1234567890,
+            created: 1_234_567_890,
             model: "test".to_owned(),
             choices: vec![ChatCompletionChoice {
                 index: 0,
@@ -390,7 +390,7 @@ mod tests {
             data: vec![ModelObject {
                 id: "test-model".to_owned(),
                 object: "model",
-                created: 1234567890,
+                created: 1_234_567_890,
                 owned_by: "local".to_owned(),
             }],
         };
@@ -527,7 +527,7 @@ mod tests {
         let chunk = CompletionChunk {
             id: "cmpl-123".to_owned(),
             object: "text_completion",
-            created: 1234567890,
+            created: 1_234_567_890,
             model: "test".to_owned(),
             choices: vec![CompletionChunkChoice {
                 index: 0,
@@ -676,7 +676,7 @@ mod tests {
         let resp = ChatCompletionResponse {
             id: "chatcmpl-tools".to_owned(),
             object: "chat.completion",
-            created: 1700000000,
+            created: 1_700_000_000,
             model: "test".to_owned(),
             choices: vec![ChatCompletionChoice {
                 index: 0,

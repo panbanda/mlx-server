@@ -38,7 +38,7 @@ pub enum ServerError {
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let (status, error_type, message) = match &self {
-            ServerError::Engine(e) => {
+            Self::Engine(e) => {
                 tracing::error!(error = %e, "Engine error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -46,17 +46,17 @@ impl IntoResponse for ServerError {
                     "Internal server error".to_owned(),
                 )
             }
-            ServerError::BadRequest(msg) => (
+            Self::BadRequest(msg) => (
                 StatusCode::BAD_REQUEST,
                 "invalid_request_error",
                 msg.clone(),
             ),
-            ServerError::ModelNotFound(model) => (
+            Self::ModelNotFound(model) => (
                 StatusCode::NOT_FOUND,
                 "model_not_found",
                 format!("Model '{model}' is not loaded"),
             ),
-            ServerError::InternalError(msg) => {
+            Self::InternalError(msg) => {
                 tracing::error!(error = %msg, "Internal error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,

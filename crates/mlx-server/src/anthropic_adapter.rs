@@ -1,6 +1,6 @@
 use crate::types::anthropic::{AnthropicContent, AnthropicMessage};
 
-/// Map an OpenAI finish_reason to an Anthropic stop_reason.
+/// Map an `OpenAI` `finish_reason` to an Anthropic `stop_reason`.
 pub fn openai_finish_to_anthropic_stop(finish_reason: &str) -> String {
     match finish_reason {
         "stop" => "end_turn".to_owned(),
@@ -10,7 +10,7 @@ pub fn openai_finish_to_anthropic_stop(finish_reason: &str) -> String {
     }
 }
 
-/// Convert Anthropic messages to the engine's ChatMessage format.
+/// Convert Anthropic messages to the engine's `ChatMessage` format.
 pub fn anthropic_messages_to_engine(
     messages: &[AnthropicMessage],
     system: Option<&str>,
@@ -32,7 +32,8 @@ pub fn anthropic_messages_to_engine(
                 .iter()
                 .filter_map(|b| match b {
                     crate::types::anthropic::ContentBlock::Text { text } => Some(text.as_str()),
-                    _ => None,
+                    crate::types::anthropic::ContentBlock::ToolUse { .. }
+                    | crate::types::anthropic::ContentBlock::ToolResult { .. } => None,
                 })
                 .collect::<Vec<_>>()
                 .join(""),
@@ -212,8 +213,7 @@ mod tests {
         assert!(
             result
                 .first()
-                .map(|m| m.content.contains("svenska"))
-                .unwrap_or(false)
+                .is_some_and(|m| m.content.contains("svenska"))
         );
     }
 

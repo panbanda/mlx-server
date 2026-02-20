@@ -37,43 +37,35 @@ pub fn parse_tool_calls(text: &str) -> ToolParseResult {
     let mut remaining = text;
 
     loop {
-        match remaining.find(TOOL_CALL_OPEN) {
-            Some(start_pos) => {
-                // Collect text before the tool call tag
-                result_text.push_str(remaining.get(..start_pos).unwrap_or_default());
+        if let Some(start_pos) = remaining.find(TOOL_CALL_OPEN) {
+            result_text.push_str(remaining.get(..start_pos).unwrap_or_default());
 
-                let after_open = remaining
-                    .get(start_pos + TOOL_CALL_OPEN.len()..)
-                    .unwrap_or_default();
+            let after_open = remaining
+                .get(start_pos + TOOL_CALL_OPEN.len()..)
+                .unwrap_or_default();
 
-                match after_open.find(TOOL_CALL_CLOSE) {
-                    Some(end_pos) => {
-                        let raw_block = after_open.get(..end_pos).unwrap_or_default();
-                        let call_content = raw_block.trim();
+            if let Some(end_pos) = after_open.find(TOOL_CALL_CLOSE) {
+                let raw_block = after_open.get(..end_pos).unwrap_or_default();
+                let call_content = raw_block.trim();
 
-                        if let Some(parsed) = try_parse_tool_call(call_content) {
-                            tool_calls.push(parsed);
-                        } else {
-                            result_text.push_str(TOOL_CALL_OPEN);
-                            result_text.push_str(raw_block);
-                            result_text.push_str(TOOL_CALL_CLOSE);
-                        }
-
-                        remaining = after_open
-                            .get(end_pos + TOOL_CALL_CLOSE.len()..)
-                            .unwrap_or_default();
-                    }
-                    None => {
-                        // Unclosed tag -- treat rest as text
-                        result_text.push_str(remaining.get(start_pos..).unwrap_or_default());
-                        break;
-                    }
+                if let Some(parsed) = try_parse_tool_call(call_content) {
+                    tool_calls.push(parsed);
+                } else {
+                    result_text.push_str(TOOL_CALL_OPEN);
+                    result_text.push_str(raw_block);
+                    result_text.push_str(TOOL_CALL_CLOSE);
                 }
-            }
-            None => {
-                result_text.push_str(remaining);
+
+                remaining = after_open
+                    .get(end_pos + TOOL_CALL_CLOSE.len()..)
+                    .unwrap_or_default();
+            } else {
+                result_text.push_str(remaining.get(start_pos..).unwrap_or_default());
                 break;
             }
+        } else {
+            result_text.push_str(remaining);
+            break;
         }
     }
 
@@ -93,7 +85,7 @@ fn try_parse_tool_call(content: &str) -> Option<ParsedToolCall> {
     let arguments = obj
         .get("arguments")
         .cloned()
-        .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
 
     Some(ParsedToolCall { name, arguments })
 }

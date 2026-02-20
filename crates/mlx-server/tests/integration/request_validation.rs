@@ -3,7 +3,12 @@
 //! These tests verify that the type system correctly accepts valid requests
 //! and rejects malformed ones at the serde level, before any engine interaction.
 
-#![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+#![allow(
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::tests_outside_test_module
+)]
 
 use mlx_server::types::anthropic::{
     AnthropicContent, AnthropicMessage, ContentBlock, CountTokensRequest, CreateMessageRequest,
@@ -197,7 +202,7 @@ fn embedding_request_multiple_inputs() {
     let req: EmbeddingRequest = serde_json::from_str(json).unwrap();
     match &req.input {
         EmbeddingInput::Multiple(v) => assert_eq!(v.len(), 2),
-        _ => panic!("expected Multiple variant"),
+        EmbeddingInput::Single(_) => panic!("expected Multiple variant"),
     }
 }
 
@@ -277,10 +282,12 @@ fn anthropic_content_blocks() {
             assert_eq!(blocks.len(), 2);
             match &blocks[0] {
                 ContentBlock::Text { text } => assert_eq!(text, "first"),
-                _ => panic!("expected Text block"),
+                ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => {
+                    panic!("expected Text block")
+                }
             }
         }
-        _ => panic!("expected Blocks variant"),
+        AnthropicContent::Text(_) => panic!("expected Blocks variant"),
     }
 }
 
@@ -303,9 +310,11 @@ fn anthropic_tool_use_block() {
                 assert_eq!(name, "get_weather");
                 assert_eq!(input["city"], "SF");
             }
-            _ => panic!("expected ToolUse block"),
+            ContentBlock::Text { .. } | ContentBlock::ToolResult { .. } => {
+                panic!("expected ToolUse block")
+            }
         },
-        _ => panic!("expected Blocks variant"),
+        AnthropicContent::Text(_) => panic!("expected Blocks variant"),
     }
 }
 
@@ -329,9 +338,11 @@ fn anthropic_tool_result_block() {
                 assert_eq!(tool_use_id, "toolu_123");
                 assert_eq!(content, "72 degrees");
             }
-            _ => panic!("expected ToolResult block"),
+            ContentBlock::Text { .. } | ContentBlock::ToolUse { .. } => {
+                panic!("expected ToolResult block")
+            }
         },
-        _ => panic!("expected Blocks variant"),
+        AnthropicContent::Text(_) => panic!("expected Blocks variant"),
     }
 }
 

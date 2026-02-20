@@ -15,9 +15,24 @@ unsafe_code = "forbid"
 non_ascii_idents = "forbid"
 
 [workspace.lints.clippy]
+# Lint groups
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
 # MSRV compat: these suggest features stabilized after 1.85.0
 collapsible_if = "allow"
 manual_is_multiple_of = "allow"
+
+# Pedantic overrides -- too noisy or conflicts with project conventions
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+similar_names = "allow"
+many_single_char_names = "allow"
+struct_field_names = "allow"
+
+# Restriction lints (opt-in)
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
@@ -32,6 +47,31 @@ print_stderr = "deny"
 shadow_reuse = "deny"
 shadow_same = "deny"
 shadow_unrelated = "deny"
+clone_on_ref_ptr = "deny"
+empty_structs_with_brackets = "deny"
+float_cmp_const = "deny"
+fn_to_numeric_cast_any = "deny"
+format_push_string = "deny"
+if_then_some_else_none = "deny"
+impl_trait_in_params = "deny"
+infinite_loop = "deny"
+lossy_float_literal = "deny"
+mem_forget = "deny"
+mixed_read_write_in_expression = "deny"
+mutex_atomic = "deny"
+rc_buffer = "deny"
+rc_mutex = "deny"
+redundant_type_annotations = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+self_named_module_files = "deny"
+str_to_string = "deny"
+string_add = "deny"
+tests_outside_test_module = "deny"
+try_err = "deny"
+unnecessary_self_imports = "deny"
+unneeded_field_pattern = "deny"
+verbose_file_reads = "deny"
+wildcard_enum_match_arm = "deny"
 
 [workspace.dependencies]
 # Local crates

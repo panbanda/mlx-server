@@ -132,6 +132,7 @@ async fn chat_completions_non_streaming(
     })
 }
 
+#[allow(clippy::too_many_lines, clippy::needless_pass_by_value)]
 fn chat_completions_stream(
     state: SharedState,
     req: ChatCompletionRequest,
@@ -171,7 +172,7 @@ fn chat_completions_stream(
             temperature,
             top_p,
             &stop_sequences,
-            tx,
+            &tx,
         );
         if let Err(e) = result {
             tracing::error!(error = %e, "Generation error during streaming");

@@ -22,7 +22,7 @@ const DEFAULT_PREFIX_CACHE_SIZE: usize = 8;
 
 /// Simple single-request inference engine with prefix KV caching.
 ///
-/// Serializes requests with a mutex (same pattern as vllm-mlx's SimpleEngine).
+/// Serializes requests with a mutex (same pattern as vllm-mlx's `SimpleEngine`).
 /// Reuses cached KV states for shared prompt prefixes (e.g., system prompts).
 pub struct SimpleEngine {
     model: Mutex<AnyModel>,
@@ -50,11 +50,11 @@ enum FinishCondition {
 }
 
 impl FinishCondition {
-    fn is_finished(&self) -> bool {
+    const fn is_finished(&self) -> bool {
         !matches!(self, Self::None)
     }
 
-    fn reason_str(&self) -> Option<&'static str> {
+    const fn reason_str(&self) -> Option<&'static str> {
         match self {
             Self::Eos | Self::StopSequence(_) => Some("stop"),
             Self::MaxTokens => Some("length"),
@@ -65,7 +65,7 @@ impl FinishCondition {
 
 impl SimpleEngine {
     /// Load a model and tokenizer from a directory.
-    pub fn load(dir: impl AsRef<Path>) -> Result<Self, EngineError> {
+    pub fn load<P: AsRef<Path>>(dir: P) -> Result<Self, EngineError> {
         let model_dir = dir.as_ref();
         let model_name = derive_model_name(model_dir);
 
@@ -99,7 +99,7 @@ impl SimpleEngine {
     }
 
     /// Get a reference to the tokenizer.
-    pub fn tokenizer(&self) -> &Tokenizer {
+    pub const fn tokenizer(&self) -> &Tokenizer {
         &self.tokenizer
     }
 
@@ -255,6 +255,7 @@ impl SimpleEngine {
     }
 
     /// Generate a complete response from a token prompt.
+    #[allow(clippy::significant_drop_tightening)]
     pub fn generate(
         &self,
         prompt_tokens: &[u32],
@@ -297,7 +298,9 @@ impl SimpleEngine {
         if condition.is_finished() {
             let text = match &condition {
                 FinishCondition::StopSequence(truncated) => truncated.clone(),
-                _ => first_decoded,
+                FinishCondition::Eos | FinishCondition::MaxTokens | FinishCondition::None => {
+                    first_decoded
+                }
             };
             return Ok(GenerationOutput {
                 text,
@@ -330,7 +333,9 @@ impl SimpleEngine {
             if loop_condition.is_finished() {
                 let final_text = match &loop_condition {
                     FinishCondition::StopSequence(truncated) => truncated.clone(),
-                    _ => text,
+                    FinishCondition::Eos | FinishCondition::MaxTokens | FinishCondition::None => {
+                        text
+                    }
                 };
                 return Ok(GenerationOutput {
                     text: final_text,
@@ -345,6 +350,7 @@ impl SimpleEngine {
     /// Generate tokens one at a time, sending each via the provided channel.
     ///
     /// If the receiver is dropped (client disconnected), generation stops early.
+    #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
     pub fn generate_streaming(
         &self,
         prompt_tokens: &[u32],
@@ -352,7 +358,7 @@ impl SimpleEngine {
         temperature: f32,
         top_p: f32,
         stop_sequences: &[String],
-        sender: tokio::sync::mpsc::Sender<StreamingOutput>,
+        sender: &tokio::sync::mpsc::Sender<StreamingOutput>,
     ) -> Result<(), EngineError> {
         if prompt_tokens.is_empty() {
             return Err(EngineError::Generation("Prompt is empty".to_owned()));
@@ -379,14 +385,13 @@ impl SimpleEngine {
         all_tokens.push(first_token_id);
 
         let first_decoded = self.decode_tokens(&all_tokens)?;
-        let (first_text, first_hit_stop) = if !stop_sequences.is_empty() {
-            if let Some(truncated) = check_stop_sequences(&first_decoded, stop_sequences) {
-                (truncated, true)
-            } else {
-                (first_decoded.clone(), false)
-            }
-        } else {
+        let (first_text, first_hit_stop) = if stop_sequences.is_empty() {
             (first_decoded.clone(), false)
+        } else {
+            check_stop_sequences(&first_decoded, stop_sequences).map_or_else(
+                || (first_decoded.clone(), false),
+                |truncated| (truncated, true),
+            )
         };
         let mut prev_decoded_len = first_decoded.len();
 
@@ -440,18 +445,19 @@ impl SimpleEngine {
             let old_decoded_len = prev_decoded_len;
             prev_decoded_len = full_text.len();
 
-            let (final_new_text, hit_stop_seq) = if !stop_sequences.is_empty() {
-                if let Some(truncated) = check_stop_sequences(&full_text, stop_sequences) {
-                    let emit = truncated
-                        .get(old_decoded_len..)
-                        .unwrap_or_default()
-                        .to_owned();
-                    (emit, true)
-                } else {
-                    (new_text, false)
-                }
-            } else {
+            let (final_new_text, hit_stop_seq) = if stop_sequences.is_empty() {
                 (new_text, false)
+            } else {
+                check_stop_sequences(&full_text, stop_sequences).map_or(
+                    (new_text, false),
+                    |truncated| {
+                        let emit = truncated
+                            .get(old_decoded_len..)
+                            .unwrap_or_default()
+                            .to_owned();
+                        (emit, true)
+                    },
+                )
             };
 
             let is_eos = self.eos_token_ids.contains(&token_id);
@@ -489,7 +495,7 @@ impl SimpleEngine {
 }
 
 /// Check if any stop sequence appears in the generated text.
-/// Returns Some(truncated_text) if a stop sequence was found, None otherwise.
+/// Returns `Some(truncated_text)` if a stop sequence was found, None otherwise.
 fn check_stop_sequences(text: &str, stop_sequences: &[String]) -> Option<String> {
     let mut earliest: Option<usize> = None;
     for seq in stop_sequences {
@@ -502,7 +508,7 @@ fn check_stop_sequences(text: &str, stop_sequences: &[String]) -> Option<String>
 
 /// Derive a human-readable model name from a directory path.
 ///
-/// Detects HuggingFace cache paths (`models--<org>--<name>/snapshots/<hash>`)
+/// Detects `HuggingFace` cache paths (`models--<org>--<name>/snapshots/<hash>`)
 /// and extracts `<org>/<name>` instead of using the hash as the name.
 /// Falls back to the directory's file name.
 fn derive_model_name(model_dir: &Path) -> String {
@@ -522,7 +528,7 @@ fn derive_model_name(model_dir: &Path) -> String {
                         let model = &rest[sep + 2..];
                         return format!("{org}/{model}");
                     }
-                    return rest.to_string();
+                    return rest.to_owned();
                 }
             }
         }
@@ -701,14 +707,17 @@ mod tests {
 
     #[test]
     fn test_extract_eos_tokens_single_number() {
-        assert_eq!(eos_from_config(r#"{"eos_token_id": 151643}"#), vec![151643]);
+        assert_eq!(
+            eos_from_config(r#"{"eos_token_id": 151643}"#),
+            vec![151_643]
+        );
     }
 
     #[test]
     fn test_extract_eos_tokens_array() {
         assert_eq!(
             eos_from_config(r#"{"eos_token_id": [151643, 151645]}"#),
-            vec![151643, 151645]
+            vec![151_643, 151_645]
         );
     }
 
@@ -753,7 +762,7 @@ mod tests {
 
     #[test]
     fn test_stop_sequence_very_long_text_short_stop() {
-        let long_text = "a".repeat(10_000) + "STOP" + &"b".repeat(5_000);
+        let long_text = format!("{}STOP{}", "a".repeat(10_000), "b".repeat(5_000));
         let result = check_stop_sequences(&long_text, &["STOP".to_owned()]);
         assert_eq!(result, Some("a".repeat(10_000)));
     }
