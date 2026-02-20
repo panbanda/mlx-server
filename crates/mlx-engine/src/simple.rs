@@ -5,7 +5,7 @@ use mlx_models::{AnyCache, AnyModel, sample};
 use mlx_rs::{
     Array,
     ops::indexing::{IndexOp, NewAxis},
-    transforms::eval,
+    transforms::{async_eval, eval},
 };
 use tokenizers::Tokenizer;
 
@@ -316,13 +316,10 @@ impl SimpleEngine {
                 temperature,
                 top_p,
             )?;
+            async_eval([&current_token]).map_err(EngineError::Mlx)?;
 
             let token_id: u32 = current_token.item();
             tokens.push(token_id);
-
-            if tokens.len() % 32 == 0 {
-                eval([&current_token]).map_err(EngineError::Mlx)?;
-            }
 
             let completion_len = Self::completion_len(&tokens)?;
             let text = self.decode_tokens(&tokens)?;
@@ -428,13 +425,10 @@ impl SimpleEngine {
                 temperature,
                 top_p,
             )?;
+            async_eval([&current_token]).map_err(EngineError::Mlx)?;
 
             let token_id: u32 = current_token.item();
             all_tokens.push(token_id);
-
-            if all_tokens.len() % 32 == 0 {
-                eval([&current_token]).map_err(EngineError::Mlx)?;
-            }
 
             let completion_len = Self::completion_len(&all_tokens)?;
 
