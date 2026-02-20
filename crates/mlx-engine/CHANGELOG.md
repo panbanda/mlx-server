@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/panbanda/mlx-server/compare/mlx-engine-v0.1.3...mlx-engine-v0.1.4) (2026-02-20)
+
+
+### Performance Improvements
+
+* skip token decoding in generate loop when no stop sequences ([#16](https://github.com/panbanda/mlx-server/issues/16)) ([cd8dbd0](https://github.com/panbanda/mlx-server/commit/cd8dbd079518e94566a48b7609fd4e491962f0f4))
+* use async_eval to pipeline GPU execution in decode loop ([#15](https://github.com/panbanda/mlx-server/issues/15)) ([f4a6042](https://github.com/panbanda/mlx-server/commit/f4a60422fa5e9fd67f2487d61f0fdcc7d5885e39))
+
 ## [0.1.3](https://github.com/panbanda/mlx-server/compare/mlx-engine-v0.1.2...mlx-engine-v0.1.3) (2026-02-20)
 
 
