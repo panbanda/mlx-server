@@ -58,6 +58,10 @@ impl AnyModel {
             AnyModel::Transformer(m) => {
                 // Validated positive at Model::new; infallible for positive i32.
                 let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
+                    tracing::warn!(
+                        num_hidden_layers = m.args.num_hidden_layers,
+                        "negative num_hidden_layers; returning empty KV cache"
+                    );
                     return AnyCache::KV(vec![]);
                 };
                 AnyCache::KV(

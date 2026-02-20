@@ -46,6 +46,8 @@ fn resolve_with_cache(path: &str, cache_root: Option<&Path>) -> Result<PathBuf, 
 }
 
 /// Read `refs/main` and resolve to the snapshot directory.
+/// Only the default revision (`main`) is supported; models downloaded at a
+/// specific revision or branch will not be found.
 fn resolve_hf_snapshot(cache_root: &Path, org: &str, name: &str) -> Result<PathBuf, String> {
     let model_dir = cache_root.join(format!("models--{org}--{name}"));
     let ref_path = model_dir.join("refs").join("main");
@@ -69,8 +71,17 @@ fn resolve_hf_snapshot(cache_root: &Path, org: &str, name: &str) -> Result<PathB
 }
 
 fn default_hf_cache() -> Option<PathBuf> {
-    // HuggingFace Python uses $HF_HOME/hub or ~/.cache/huggingface/hub,
-    // NOT the platform-specific cache dir (~/Library/Caches on macOS).
+    // Resolution order matches the HuggingFace Python SDK:
+    // 1. $HF_HUB_CACHE          (direct cache path)
+    // 2. $HUGGINGFACE_HUB_CACHE  (legacy alias)
+    // 3. $HF_HOME/hub            (home override)
+    // 4. ~/.cache/huggingface/hub (default)
+    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
+        return Some(PathBuf::from(cache));
+    }
+    if let Ok(cache) = std::env::var("HUGGINGFACE_HUB_CACHE") {
+        return Some(PathBuf::from(cache));
+    }
     if let Ok(hf_home) = std::env::var("HF_HOME") {
         return Some(PathBuf::from(hf_home).join("hub"));
     }
@@ -146,6 +157,12 @@ mod tests {
     #[test]
     fn test_resolve_no_cache_for_hf_id_is_err() {
         let result = resolve_with_cache("org/model", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_tilde_expansion_nonexistent_is_err() {
+        let result = resolve("~/nonexistent_model_dir_12345");
         assert!(result.is_err());
     }
 
