@@ -5,10 +5,12 @@
 //! all other layers use `GatedDeltaNet` (SSM-like linear attention).
 //! All layers use Sparse `MoE` for the feed-forward block.
 
+use std::ffi::{CStr, c_char, c_void};
 use std::path::Path;
+use std::sync::Mutex;
 
 use mlx_rs::{
-    Array,
+    Array, Stream,
     builder::Builder,
     error::Exception,
     fast,
@@ -18,6 +20,26 @@ use mlx_rs::{
     ops::{self, indexing::IndexOp},
 };
 use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// FFI error capture for gather_qmm
+// ---------------------------------------------------------------------------
+
+/// Captures the most recent MLX error message from our FFI calls.
+/// This is only read when `mlx_gather_qmm` returns a non-zero status.
+static FFI_LAST_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+/// Error handler registered with MLX before our first `gather_qmm` call.
+/// Captures the error message so we can include it in the Rust Exception.
+#[allow(unsafe_code)]
+unsafe extern "C" fn gather_qmm_error_handler(msg: *const c_char, _data: *mut c_void) {
+    let s = unsafe { CStr::from_ptr(msg) }
+        .to_string_lossy()
+        .into_owned();
+    if let Ok(mut guard) = FFI_LAST_ERROR.lock() {
+        *guard = Some(s);
+    }
+}
 
 use crate::{
     cache::{ConcatKeyValueCache, KeyValueCache},
@@ -226,6 +248,90 @@ fn swiglu(gate: &Array, x: &Array) -> Result<Array, Exception> {
 }
 
 // ---------------------------------------------------------------------------
+// gather_qmm FFI wrapper
+// ---------------------------------------------------------------------------
+
+/// Quantized matrix multiplication with expert-level gather, dispatched as a
+/// single fused GPU kernel. Replaces per-expert `take_axis + quantized_matmul`
+/// loops in `MoE` layers.
+///
+/// `rhs_indices` selects which expert weight matrices to use for each batch
+/// element. Batch dimensions of `x` and `rhs_indices` are broadcast together.
+#[allow(unsafe_code, clippy::too_many_arguments)]
+fn gather_qmm(
+    x: &Array,
+    w: &Array,
+    scales: &Array,
+    biases: &Array,
+    rhs_indices: &Array,
+    transpose: bool,
+    group_size: i32,
+    bits: i32,
+    sorted_indices: bool,
+) -> Result<Array, Exception> {
+    // Register our error handler so we can capture the actual MLX error
+    // message when the FFI call fails. This overrides any previously
+    // registered handler (including mlx-rs's internal one).
+    if let Ok(mut guard) = FFI_LAST_ERROR.lock() {
+        *guard = None;
+    }
+    unsafe {
+        mlx_sys::mlx_set_error_handler(Some(gather_qmm_error_handler), std::ptr::null_mut(), None);
+    }
+
+    let stream = Stream::task_local_or_default();
+    // Null array signals "no lhs gather" to the C API
+    let null_lhs = unsafe { mlx_sys::mlx_array_new() };
+    let mut result = unsafe { mlx_sys::mlx_array_new() };
+    let status = unsafe {
+        mlx_sys::mlx_gather_qmm(
+            &raw mut result,
+            x.as_ptr(),
+            w.as_ptr(),
+            scales.as_ptr(),
+            biases.as_ptr(),
+            null_lhs,
+            rhs_indices.as_ptr(),
+            transpose,
+            group_size,
+            bits,
+            sorted_indices,
+            stream.as_ptr(),
+        )
+    };
+
+    // Always free the null sentinel
+    unsafe { mlx_sys::mlx_array_free(null_lhs) };
+
+    if status != 0 {
+        // Free the uninitialized result array
+        unsafe { mlx_sys::mlx_array_free(result) };
+        let mlx_msg = FFI_LAST_ERROR
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+            .unwrap_or_default();
+        let msg = format!(
+            "gather_qmm failed: {mlx_msg} \
+             [x={:?}/{:?} w={:?}/{:?} scales={:?}/{:?} biases={:?}/{:?} \
+             idx={:?}/{:?} transpose={transpose} gs={group_size} bits={bits}]",
+            x.shape(),
+            x.dtype(),
+            w.shape(),
+            w.dtype(),
+            scales.shape(),
+            scales.dtype(),
+            biases.shape(),
+            biases.dtype(),
+            rhs_indices.shape(),
+            rhs_indices.dtype(),
+        );
+        return Err(Exception::custom(msg));
+    }
+    Ok(unsafe { Array::from_ptr(result) })
+}
+
+// ---------------------------------------------------------------------------
 // Qwen3NextAttention (full attention with gated Q and partial RoPE)
 // ---------------------------------------------------------------------------
 
@@ -415,49 +521,63 @@ impl SwitchMlpWeights {
         })
     }
 
-    /// Apply one expert's MLP to input x.
-    /// `expert_idx` is a 0-d or 1-element array indexing into the stacked weights.
-    fn forward_expert(&self, x: &Array, expert_idx: &Array) -> Result<Array, Exception> {
-        let gate_w = self.gate_proj.weight.take_axis(expert_idx, 0)?;
-        let gate_s = self.gate_proj.scales.take_axis(expert_idx, 0)?;
-        let gate_b = self.gate_proj.biases.take_axis(expert_idx, 0)?;
-        let gate_out = ops::quantized_matmul(
-            x,
-            &gate_w.squeeze_axes(&[0])?,
-            &gate_s.squeeze_axes(&[0])?,
-            &gate_b.squeeze_axes(&[0])?,
+    /// Apply the full `SwiGLU` `MoE` block for all selected experts in one shot
+    /// using `gather_qmm` (fused expert-indexed quantized matmul).
+    ///
+    /// `x`: `[..., D]` input
+    /// `indices`: `[..., top_k]` expert indices
+    /// Returns: `[..., top_k, D]`
+    fn forward_gather(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
+        // Two expand_dims so x batch dims broadcast with the indices shape.
+        // x: [B, L, D] -> [B, L, 1, 1, D]
+        //   batch = [B, L, 1], M=1, K=D
+        // indices: [B, L, top_k]
+        //   broadcast([B, L, 1], [B, L, top_k]) -> [B, L, top_k]
+        let x_exp = x.expand_dims(-2)?.expand_dims(-2)?;
+
+        // Gate/up projections: [B, L, top_k, 1, intermediate]
+        let gate_out = gather_qmm(
+            &x_exp,
+            &self.gate_proj.weight,
+            &self.gate_proj.scales,
+            &self.gate_proj.biases,
+            indices,
             true,
             self.gate_proj.group_size,
             self.gate_proj.bits,
+            sorted,
         )?;
-
-        let up_w = self.up_proj.weight.take_axis(expert_idx, 0)?;
-        let up_s = self.up_proj.scales.take_axis(expert_idx, 0)?;
-        let up_b = self.up_proj.biases.take_axis(expert_idx, 0)?;
-        let up_out = ops::quantized_matmul(
-            x,
-            &up_w.squeeze_axes(&[0])?,
-            &up_s.squeeze_axes(&[0])?,
-            &up_b.squeeze_axes(&[0])?,
+        let up_out = gather_qmm(
+            &x_exp,
+            &self.up_proj.weight,
+            &self.up_proj.scales,
+            &self.up_proj.biases,
+            indices,
             true,
             self.up_proj.group_size,
             self.up_proj.bits,
+            sorted,
         )?;
 
+        // SwiGLU is element-wise, preserves M=1: [B, L, top_k, 1, intermediate]
         let activated = swiglu(&gate_out, &up_out)?;
 
-        let down_w = self.down_proj.weight.take_axis(expert_idx, 0)?;
-        let down_s = self.down_proj.scales.take_axis(expert_idx, 0)?;
-        let down_b = self.down_proj.biases.take_axis(expert_idx, 0)?;
-        ops::quantized_matmul(
+        // Down projection: [B, L, top_k, 1, D]
+        // activated batch=[B,L,top_k] broadcasts with indices [B,L,top_k] exactly
+        let down_out = gather_qmm(
             &activated,
-            &down_w.squeeze_axes(&[0])?,
-            &down_s.squeeze_axes(&[0])?,
-            &down_b.squeeze_axes(&[0])?,
+            &self.down_proj.weight,
+            &self.down_proj.scales,
+            &self.down_proj.biases,
+            indices,
             true,
             self.down_proj.group_size,
             self.down_proj.bits,
-        )
+            sorted,
+        )?;
+
+        // Squeeze M=1: [B, L, top_k, D]
+        down_out.squeeze_axes(&[-2])
     }
 }
 
@@ -503,26 +623,13 @@ impl SparseMoeBlock {
         })
     }
 
-    #[allow(non_snake_case)]
     fn forward(&self, x: &Array) -> Result<Array, Exception> {
-        let shape = x.shape();
-        let B = *shape
-            .first()
-            .ok_or_else(|| Exception::custom("Input must have >= 2 dims"))?;
-        let L = *shape
-            .get(1)
-            .ok_or_else(|| Exception::custom("Input must have >= 2 dims"))?;
-        let D = *shape
-            .get(2)
-            .ok_or_else(|| Exception::custom("Input must have >= 3 dims"))?;
-
         // Router: compute gate scores
         let gates = ops::softmax_axis(&self.gate.forward(x)?, -1, true)?;
 
         // Top-K selection via argpartition
         let neg_k = -self.top_k;
         let all_inds = ops::argpartition_axis(&gates, neg_k, -1)?;
-        // Take last K indices (the top-K)
         let num_experts = *gates
             .shape()
             .last()
@@ -538,60 +645,21 @@ impl SparseMoeBlock {
             raw_scores
         };
 
-        // Expert computation: loop over K selected experts per token
-        let x_flat = x.reshape(&[-1, D])?;
-        let n_tokens = B * L;
-        let inds_flat = top_inds.reshape(&[-1, self.top_k])?;
-        let scores_flat = top_scores.reshape(&[-1, self.top_k])?;
+        // Expert computation via fused gather_qmm (single GPU dispatch per projection)
+        // x: [B, L, D], top_inds: [B, L, top_k] -> y: [B, L, top_k, D]
+        let y = self.switch_mlp.forward_gather(x, &top_inds, false)?;
 
-        // Accumulate weighted expert outputs per token
-        let n_tokens_usize =
-            usize::try_from(n_tokens).map_err(|_| Exception::custom("n_tokens overflow"))?;
-        let mut token_results: Vec<Array> = (0..n_tokens_usize)
-            .map(|_| Array::zeros::<f32>(&[1, D]))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        for ki in 0..self.top_k {
-            let token_expert_inds = inds_flat.index((.., ki..ki + 1));
-            let token_scores = scores_flat.index((.., ki..ki + 1));
-
-            for ti in 0..n_tokens {
-                let ti_usize = usize::try_from(ti).map_err(|_| Exception::custom("ti overflow"))?;
-                let token_x = x_flat.index((ti..ti + 1, ..));
-                let expert_idx = token_expert_inds.index((ti, ..));
-                let score = token_scores.index((ti, 0..1));
-
-                let expert_out = self.switch_mlp.forward_expert(&token_x, &expert_idx)?;
-                let weighted = expert_out.multiply(&score.reshape(&[1, 1])?)?;
-
-                let current = token_results
-                    .get(ti_usize)
-                    .ok_or_else(|| Exception::custom("token index out of bounds"))?;
-                let updated = current.add(&weighted)?;
-                // Safe replacement via Vec indexing
-                if let Some(slot) = token_results.get_mut(ti_usize) {
-                    *slot = updated;
-                }
-            }
-        }
-
-        let result_refs: Vec<&Array> = token_results.iter().collect();
-        let expert_sum = if n_tokens_usize > 1 {
-            ops::concatenate_axis(&result_refs, 0)?
-        } else if let Some(single) = token_results.into_iter().next() {
-            single
-        } else {
-            Array::zeros::<f32>(&[n_tokens, D])?
-        };
-
-        let y = expert_sum.reshape(&[B, L, D])?;
+        // Weighted sum over experts: [B, L, top_k, D] * [B, L, top_k, 1] -> sum -> [B, L, D]
+        let expert_sum = y
+            .multiply(&top_scores.expand_dims(-1)?)?
+            .sum_axes(&[-2], false)?;
 
         // Shared expert
         let shared_y = self.shared_expert.forward(x)?;
         let shared_gate_val = nn::sigmoid(&self.shared_expert_gate.forward(x)?)?;
         let shared_out = shared_y.multiply(&shared_gate_val)?;
 
-        y.add(shared_out)
+        expert_sum.add(shared_out)
     }
 }
 
@@ -761,11 +829,9 @@ impl GatedDeltaNet {
         let norm_k = fast::rms_norm(&conv_k, &Array::ones::<f32>(&[self.head_k_dim])?, 1e-6)?
             .multiply(Array::from_f32(inv_scale_f32))?;
 
-        // Compute gating: g = exp(-exp(A_log) * softplus(a + dt_bias))
-        let a_plus_bias = a.add(&*self.dt_bias)?;
-        let sp = nn::softplus(&a_plus_bias)?;
-        let neg_decay = self.A_log.exp()?.negative()?.multiply(sp)?;
-        let g = neg_decay.exp()?;
+        // Compute gating via compiled function (fuses element-wise ops)
+        let mut compiled_g = mlx_rs::transforms::compile::compile(compute_g_compiled, None);
+        let g = compiled_g((&*self.A_log, &a, &*self.dt_bias))?;
 
         // beta = sigmoid(b)
         let beta = nn::sigmoid(&b)?;
@@ -789,7 +855,9 @@ impl GatedDeltaNet {
             norm_k
         };
 
-        // Gated delta update: sequential loop over timesteps
+        // Gated delta update: sequential loop over timesteps (compiled to fuse element-wise ops)
+        let mut compiled_step =
+            mlx_rs::transforms::compile::compile(gated_delta_step_compiled, None);
         let mut ys =
             Vec::with_capacity(usize::try_from(S).map_err(|_| Exception::custom("S overflow"))?);
         for t in 0..S {
@@ -799,8 +867,14 @@ impl GatedDeltaNet {
             let gt = g.index((.., t, ..));
             let bt = beta.index((.., t, ..));
 
-            let (y_t, new_state) = gated_delta_step(&qt, &kt, &vt, &gt, &bt, &state)?;
-            state = new_state;
+            let step_inputs = [qt, kt, vt, gt, bt, state];
+            let mut step_result = compiled_step(step_inputs.as_slice())?;
+            state = step_result
+                .pop()
+                .ok_or_else(|| Exception::custom("compiled step missing new_state"))?;
+            let y_t = step_result
+                .pop()
+                .ok_or_else(|| Exception::custom("compiled step missing y"))?;
             ys.push(y_t);
         }
 
@@ -877,11 +951,11 @@ impl GatedDeltaNet {
 
 /// Single gated delta recurrence step.
 ///
-/// q, k: [B, Hv, Dk]  (already repeated if Hv > Hk)
-/// v: [B, Hv, Dv]
-/// g: [B, Hv]  (scalar gating)
-/// beta: [B, Hv]
-/// state: [B, Hv, Dv, Dk]
+/// q, k: `[B, Hv, Dk]`  (already repeated if Hv > Hk)
+/// v: `[B, Hv, Dv]`
+/// g: `[B, Hv]`  (scalar gating)
+/// beta: `[B, Hv]`
+/// state: `[B, Hv, Dv, Dk]`
 fn gated_delta_step(
     q: &Array,
     k: &Array,
@@ -913,6 +987,29 @@ fn gated_delta_step(
     let y = new_state.multiply(&q_expanded)?.sum_axes(&[-1], false)?;
 
     Ok((y, new_state))
+}
+
+// ---------------------------------------------------------------------------
+// Compiled wrappers for GatedDeltaNet (fuses element-wise GPU kernels)
+// ---------------------------------------------------------------------------
+
+/// Compiled gate computation: `g = exp(-exp(A_log) * softplus(a + dt_bias))`.
+///
+/// Fuses multiple element-wise operations into fewer GPU kernel launches.
+fn compute_g_compiled((a_log, a, dt_bias): (&Array, &Array, &Array)) -> Result<Array, Exception> {
+    let a_plus_bias = a.add(dt_bias)?;
+    let sp = nn::softplus(&a_plus_bias)?;
+    let neg_decay = a_log.exp()?.negative()?.multiply(sp)?;
+    neg_decay.exp()
+}
+
+/// Compiled gated delta step: packages inputs/outputs for `compile`.
+#[allow(clippy::indexing_slicing)]
+fn gated_delta_step_compiled(inputs: &[Array]) -> Result<Vec<Array>, Exception> {
+    let (y, new_state) = gated_delta_step(
+        &inputs[0], &inputs[1], &inputs[2], &inputs[3], &inputs[4], &inputs[5],
+    )?;
+    Ok(vec![y, new_state])
 }
 
 // ---------------------------------------------------------------------------
@@ -1661,5 +1758,346 @@ mod tests {
         // State should be different after two steps
         assert_eq!(state2.shape(), &[1, 2, 3, 4]);
         assert_eq!(y2.shape(), &[1, 2, 3]);
+    }
+
+    // -----------------------------------------------------------------------
+    // gather_qmm + MoE rewrite tests
+    // -----------------------------------------------------------------------
+
+    /// Quantize a float matrix and return (weight, scales, biases) suitable for
+    /// `gather_qmm` / `quantized_matmul`.
+    fn quantize_weights(w: &Array, group_size: i32, bits: i32) -> (Array, Array, Array) {
+        let (qw, scales, biases) = ops::quantize(w, group_size, bits).unwrap();
+        (qw, scales, biases)
+    }
+
+    #[test]
+    fn test_gather_qmm_basic() {
+        // 2 experts, out=64, in=64 (dims must be multiples of 32 for quantize)
+        let w_float = Array::ones::<f32>(&[2, 64, 64]).unwrap();
+        let (qw, scales, biases) = quantize_weights(&w_float, 64, 4);
+
+        // Input [1, 1, 1, 64], select expert 0
+        let x = Array::ones::<f32>(&[1, 1, 1, 64]).unwrap();
+        let indices = Array::from_slice(&[0_u32], &[1, 1, 1]);
+
+        let result = gather_qmm(&x, &qw, &scales, &biases, &indices, true, 64, 4, false).unwrap();
+        // Force evaluation to run the Metal kernel (MLX is lazy)
+        result.eval().unwrap();
+        // Output: [1, 1, 1, 1, 64] (batch broadcast with indices, M=1, N=64)
+        assert_eq!(result.ndim(), 5);
+        assert_eq!(*result.shape().last().unwrap(), 64);
+    }
+
+    #[test]
+    fn test_gather_qmm_multi_expert() {
+        // 4 experts, out=64, in=64
+        let w_float = Array::ones::<f32>(&[4, 64, 64]).unwrap();
+        let (qw, scales, biases) = quantize_weights(&w_float, 64, 4);
+
+        let x = Array::ones::<f32>(&[1, 1, 1, 64]).unwrap();
+        let indices = Array::from_slice(&[0_u32, 2, 3], &[1, 1, 3]);
+
+        let result = gather_qmm(&x, &qw, &scales, &biases, &indices, true, 64, 4, false).unwrap();
+        result.eval().unwrap();
+        // Output: [1, 1, 3, 1, 64] — 3 experts selected
+        assert_eq!(*result.shape().get(2).unwrap(), 3);
+    }
+
+    #[test]
+    fn test_gather_qmm_matches_per_expert() {
+        // Verify that gather_qmm produces the same result as the old
+        // take_axis + quantized_matmul path for a single expert.
+        let w_float = mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[4, 64, 64], None).unwrap();
+        let (qw, scales, biases) = quantize_weights(&w_float, 64, 4);
+
+        let x = mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[1, 64], None).unwrap();
+        let expert_idx = Array::from_slice(&[2_u32], &[1]);
+
+        // Old path: take_axis + quantized_matmul
+        let ew = qw
+            .take_axis(&expert_idx, 0)
+            .unwrap()
+            .squeeze_axes(&[0])
+            .unwrap();
+        let es = scales
+            .take_axis(&expert_idx, 0)
+            .unwrap()
+            .squeeze_axes(&[0])
+            .unwrap();
+        let eb = biases
+            .take_axis(&expert_idx, 0)
+            .unwrap()
+            .squeeze_axes(&[0])
+            .unwrap();
+        let old_result = ops::quantized_matmul(&x, &ew, &es, &eb, true, 64, 4).unwrap();
+
+        // New path: gather_qmm
+        let x_expanded = x.expand_dims(-2).unwrap(); // [1, 1, 64]
+        let indices = Array::from_slice(&[2_u32], &[1, 1]);
+        let new_result = gather_qmm(
+            &x_expanded,
+            &qw,
+            &scales,
+            &biases,
+            &indices,
+            true,
+            64,
+            4,
+            false,
+        )
+        .unwrap()
+        .squeeze_axes(&[-2])
+        .unwrap()
+        .squeeze_axes(&[-2])
+        .unwrap();
+
+        // Compare element-wise (both are quantized, should be exact match)
+        let diff = old_result.subtract(&new_result).unwrap().abs().unwrap();
+        let max_diff: f32 = diff.max(None).unwrap().item();
+        assert!(
+            max_diff < 1e-5,
+            "gather_qmm and per-expert path differ by {max_diff}"
+        );
+    }
+
+    #[test]
+    fn test_switch_mlp_forward_gather_shapes() {
+        // Verify forward_gather produces the correct output shape with the
+        // double expand_dims pattern matching Python's SwitchGLU.
+        let mut block = SwitchMlpWeights::new(64, 4).unwrap();
+
+        // 4 experts, intermediate=64, hidden=64
+        let gate_w = Array::ones::<f32>(&[4, 64, 64]).unwrap();
+        let (gw, gs, gb) = quantize_weights(&gate_w, 64, 4);
+        *block.gate_proj.weight = gw;
+        *block.gate_proj.scales = gs;
+        *block.gate_proj.biases = gb;
+
+        let up_w = Array::ones::<f32>(&[4, 64, 64]).unwrap();
+        let (uw, us, ub) = quantize_weights(&up_w, 64, 4);
+        *block.up_proj.weight = uw;
+        *block.up_proj.scales = us;
+        *block.up_proj.biases = ub;
+
+        let down_w = Array::ones::<f32>(&[4, 64, 64]).unwrap();
+        let (dw, ds, db) = quantize_weights(&down_w, 64, 4);
+        *block.down_proj.weight = dw;
+        *block.down_proj.scales = ds;
+        *block.down_proj.biases = db;
+
+        let x = Array::ones::<f32>(&[1, 1, 64]).unwrap();
+        let indices = Array::from_slice(&[0_u32, 1, 2], &[1, 1, 3]);
+
+        let result = block.forward_gather(&x, &indices, false).unwrap();
+        // [B=1, L=1, top_k=3, D=64]
+        assert_eq!(result.shape(), &[1, 1, 3, 64]);
+    }
+
+    #[test]
+    fn test_sparse_moe_forward_output_shape() {
+        // Build a SparseMoeBlock with quantized dummy weights and verify the
+        // full forward pass produces the correct output shape.
+        let mut args = minimal_qwen3_next_args();
+        args.num_experts = 4;
+        args.num_experts_per_tok = 2;
+        args.moe_intermediate_size = 64;
+        args.shared_expert_intermediate_size = 64;
+        args.hidden_size = 64;
+
+        let mut block = SparseMoeBlock::new(&args, 64, 4).unwrap();
+
+        // Set router gate weights: [num_experts, hidden_size]
+        let gate_w = Array::ones::<f32>(&[4, 64]).unwrap();
+        let (gw, gs, gb) = quantize_weights(&gate_w, 64, 8);
+        *block.gate.weight = gw;
+        *block.gate.scales = gs;
+        *block.gate.biases = gb;
+
+        // Set switch_mlp expert weights: [4, intermediate, hidden] and [4, hidden, intermediate]
+        let proj_w = Array::ones::<f32>(&[4, 64, 64]).unwrap();
+        let (pw, ps, pb) = quantize_weights(&proj_w, 64, 4);
+        for proj in [
+            &mut block.switch_mlp.gate_proj,
+            &mut block.switch_mlp.up_proj,
+        ] {
+            *proj.weight = pw.clone();
+            *proj.scales = ps.clone();
+            *proj.biases = pb.clone();
+        }
+        *block.switch_mlp.down_proj.weight = pw;
+        *block.switch_mlp.down_proj.scales = ps;
+        *block.switch_mlp.down_proj.biases = pb;
+
+        // Set shared expert weights
+        let shared_w = Array::ones::<f32>(&[64, 64]).unwrap();
+        let (sw, ss, sb) = quantize_weights(&shared_w, 64, 4);
+        for proj in [
+            &mut block.shared_expert.gate_proj,
+            &mut block.shared_expert.up_proj,
+            &mut block.shared_expert.down_proj,
+        ] {
+            *proj.weight = sw.clone();
+            *proj.scales = ss.clone();
+            *proj.biases = sb.clone();
+        }
+
+        // Set shared expert gate weights
+        let sgate_w = Array::ones::<f32>(&[1, 64]).unwrap();
+        let (sgw, sgs, sgb) = quantize_weights(&sgate_w, 64, 8);
+        *block.shared_expert_gate.weight = sgw;
+        *block.shared_expert_gate.scales = sgs;
+        *block.shared_expert_gate.biases = sgb;
+
+        let x = Array::ones::<f32>(&[1, 1, 64]).unwrap();
+        let result = block.forward(&x).unwrap();
+        assert_eq!(result.shape(), &[1, 1, 64]);
+    }
+
+    #[test]
+    fn test_gather_qmm_model_scale() {
+        // Reproduce actual Qwen3-Next-4bit shapes: 512 experts, hidden=2048,
+        // intermediate=512, group_size=64, bits=4, top_k=10.
+        // Use smaller dims to keep test fast but same expert count.
+        let num_experts = 512;
+        let hidden = 128; // Smaller than 2048 for test speed
+        let intermediate = 64;
+
+        let w_float = mlx_rs::random::uniform::<f32, f32>(
+            0.0,
+            1.0,
+            &[num_experts, intermediate, hidden],
+            None,
+        )
+        .unwrap();
+        let (qw, scales, biases) = quantize_weights(&w_float, 64, 4);
+
+        // Decode shape: B=1, L=1, M=1
+        let x = mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[1, 1, 1, hidden], None).unwrap();
+        let indices = Array::from_slice(
+            &[0_u32, 10, 50, 100, 200, 300, 400, 450, 500, 511],
+            &[1, 1, 10],
+        );
+
+        let result = gather_qmm(&x, &qw, &scales, &biases, &indices, true, 64, 4, false).unwrap();
+        // Force actual Metal kernel evaluation
+        result.eval().unwrap();
+        assert_eq!(result.shape(), &[1, 1, 10, 1, intermediate]);
+    }
+
+    #[test]
+    fn test_gather_qmm_prefill_broadcast() {
+        // Prefill case: L > 1 requires the double expand_dims pattern.
+        // x batch [B, L, 1] must broadcast with indices [B, L, top_k].
+        let w_float = Array::ones::<f32>(&[8, 64, 64]).unwrap();
+        let (qw, scales, biases) = quantize_weights(&w_float, 64, 4);
+
+        // Prefill: B=1, L=9
+        let x = Array::ones::<f32>(&[1, 9, 1, 1, 64]).unwrap(); // double expand
+        let indices = Array::from_slice(
+            &[0_u32, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7, 0, 7],
+            &[1, 9, 2],
+        );
+
+        let result = gather_qmm(&x, &qw, &scales, &biases, &indices, true, 64, 4, false).unwrap();
+        result.eval().unwrap();
+        // [1, 9, 2, 1, 64]: broadcast batch [1,9,1] with [1,9,2] -> [1,9,2], M=1, N=64
+        assert_eq!(result.shape(), &[1, 9, 2, 1, 64]);
+    }
+
+    #[test]
+    fn test_gather_qmm_bfloat16() {
+        // Model uses bfloat16 for scales/biases and input activations.
+        // Verify gather_qmm works with bfloat16 dtypes.
+        use mlx_rs::Dtype;
+
+        let num_experts = 8;
+        let hidden = 128;
+        let intermediate = 64;
+
+        let w_float = mlx_rs::random::uniform::<f32, f32>(
+            0.0,
+            1.0,
+            &[num_experts, intermediate, hidden],
+            None,
+        )
+        .unwrap();
+        let (qw, scales_f32, biases_f32) = quantize_weights(&w_float, 64, 4);
+
+        // Convert scales/biases to bfloat16 (matching model file dtype)
+        let scales = scales_f32.as_dtype(Dtype::Bfloat16).unwrap();
+        let biases = biases_f32.as_dtype(Dtype::Bfloat16).unwrap();
+
+        // Input in bfloat16
+        let x_f32 =
+            mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[1, 1, 1, hidden], None).unwrap();
+        let x = x_f32.as_dtype(Dtype::Bfloat16).unwrap();
+        let indices = Array::from_slice(&[0_u32, 3, 7], &[1, 1, 3]);
+
+        let result = gather_qmm(&x, &qw, &scales, &biases, &indices, true, 64, 4, false).unwrap();
+        result.eval().unwrap();
+        assert_eq!(result.shape(), &[1, 1, 3, 1, intermediate]);
+    }
+
+    // -----------------------------------------------------------------------
+    // compile tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compiled_compute_g_matches_raw() {
+        let a_log = Array::from_slice(&[0.5_f32, -0.3], &[1, 2]);
+        let a = Array::from_slice(&[1.0_f32, -1.0], &[1, 2]);
+        let dt_bias = Array::from_slice(&[0.1_f32, 0.2], &[1, 2]);
+
+        // Raw computation
+        let a_plus_bias = a.add(&dt_bias).unwrap();
+        let sp = nn::softplus(&a_plus_bias).unwrap();
+        let neg_decay = a_log
+            .exp()
+            .unwrap()
+            .negative()
+            .unwrap()
+            .multiply(sp)
+            .unwrap();
+        let raw_g = neg_decay.exp().unwrap();
+
+        // Compiled computation
+        let mut compiled = mlx_rs::transforms::compile::compile(compute_g_compiled, None);
+        let compiled_g = compiled((&a_log, &a, &dt_bias)).unwrap();
+
+        let diff = raw_g.subtract(&compiled_g).unwrap().abs().unwrap();
+        let max_diff: f32 = diff.max(None).unwrap().item();
+        assert!(
+            max_diff < 1e-6,
+            "compiled compute_g differs from raw by {max_diff}"
+        );
+    }
+
+    #[test]
+    fn test_compiled_gated_delta_step_matches_raw() {
+        let q = Array::ones::<f32>(&[1, 2, 4]).unwrap();
+        let k = Array::ones::<f32>(&[1, 2, 4]).unwrap();
+        let v = Array::ones::<f32>(&[1, 2, 3]).unwrap();
+        let g = Array::ones::<f32>(&[1, 2]).unwrap();
+        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 2]).unwrap();
+        let state = Array::zeros::<f32>(&[1, 2, 3, 4]).unwrap();
+
+        // Raw computation
+        let (raw_y, raw_state) = gated_delta_step(&q, &k, &v, &g, &beta, &state).unwrap();
+
+        // Compiled computation
+        let mut compiled = mlx_rs::transforms::compile::compile(gated_delta_step_compiled, None);
+        let inputs = [q, k, v, g, beta, state];
+        let mut result = compiled(inputs.as_slice()).unwrap();
+        let compiled_state = result.pop().unwrap();
+        let compiled_y = result.pop().unwrap();
+
+        let y_diff = raw_y.subtract(&compiled_y).unwrap().abs().unwrap();
+        let y_max: f32 = y_diff.max(None).unwrap().item();
+        assert!(y_max < 1e-6, "compiled step y differs by {y_max}");
+
+        let s_diff = raw_state.subtract(&compiled_state).unwrap().abs().unwrap();
+        let s_max: f32 = s_diff.max(None).unwrap().item();
+        assert!(s_max < 1e-6, "compiled step state differs by {s_max}");
     }
 }

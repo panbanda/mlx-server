@@ -1410,6 +1410,7 @@ name = "mlx-models"
 version = "0.1.3"
 dependencies = [
  "mlx-rs",
+ "mlx-sys",
  "serde",
  "serde_json",
  "tempfile",

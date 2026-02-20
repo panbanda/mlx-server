@@ -11,7 +11,7 @@ repository = "https://github.com/panbanda/mlx-server"
 homepage = "https://github.com/panbanda/mlx-server"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 non_ascii_idents = "forbid"
 
 [workspace.lints.clippy]
@@ -80,6 +80,7 @@ mlx-models = { path = "crates/mlx-models" }
 
 # MLX
 mlx-rs = "0.25.3"
+mlx-sys = "=0.2.0"
 
 # HTTP
 axum = { version = "0.8", features = ["macros"] }

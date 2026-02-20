@@ -24,15 +24,16 @@
 | Repeat | Yes | `Array::repeat_axis` | |
 | Cumsum | Yes | `Array::cumsum` | reverse, inclusive options |
 | SDPA | Yes | `fast::scaled_dot_product_attention` | Causal mask support |
+| `gather_qmm` | Yes | `qwen3_next::gather_qmm` (FFI wrapper) | Direct call to `mlx_sys::mlx_gather_qmm`; used for fused MoE expert dispatch |
+| Compile | Yes | `transforms::compile::compile` | Fuses element-wise ops into fewer GPU kernels |
 
 ## NOT Available
 
 | Feature | Impact | Workaround |
 |---------|--------|------------|
-| `gather_mm` | MoE expert routing | Dequantize + regular matmul per expert batch |
-| `gather_qmm` | Quantized MoE routing | Same as above |
-| Custom Metal kernels | GatedDeltaNet acceleration | Use ops-based sequential fallback |
-| SwitchLinear | MoE layer type | Manual implementation with stacked weights |
+| `gather_mm` | MoE expert routing (non-quantized) | Dequantize + regular matmul per expert batch |
+| Custom Metal kernels | GatedDeltaNet acceleration | Use `compile` to fuse element-wise ops; sequential fallback for recurrence |
+| SwitchLinear | MoE layer type | Manual implementation with stacked weights + `gather_qmm` |
 
 ## Quantized Weight Loading
 
