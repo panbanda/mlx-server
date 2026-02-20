@@ -41,28 +41,6 @@ struct PreparedGeneration<'a> {
     prompt_len: u32,
 }
 
-/// Why generation terminated.
-enum FinishCondition {
-    Eos,
-    StopSequence(String),
-    MaxTokens,
-    None,
-}
-
-impl FinishCondition {
-    const fn is_finished(&self) -> bool {
-        !matches!(self, Self::None)
-    }
-
-    const fn reason_str(&self) -> Option<&'static str> {
-        match self {
-            Self::Eos | Self::StopSequence(_) => Some("stop"),
-            Self::MaxTokens => Some("length"),
-            Self::None => None,
-        }
-    }
-}
-
 impl SimpleEngine {
     /// Load a model and tokenizer from a directory.
     pub fn load<P: AsRef<Path>>(dir: P) -> Result<Self, EngineError> {
@@ -216,29 +194,6 @@ impl SimpleEngine {
         sample(&logits.index((.., -1, ..)), temperature, top_p).map_err(EngineError::Mlx)
     }
 
-    /// Decode tokens, check EOS/stop/max, and return the appropriate finish condition.
-    fn check_termination(
-        &self,
-        token_id: u32,
-        completion_len: u32,
-        max_tokens: u32,
-        decoded_text: &str,
-        stop_sequences: &[String],
-    ) -> FinishCondition {
-        if self.eos_token_ids.contains(&token_id) {
-            return FinishCondition::Eos;
-        }
-        if !stop_sequences.is_empty() {
-            if let Some(truncated) = check_stop_sequences(decoded_text, stop_sequences) {
-                return FinishCondition::StopSequence(truncated);
-            }
-        }
-        if completion_len >= max_tokens {
-            return FinishCondition::MaxTokens;
-        }
-        FinishCondition::None
-    }
-
     /// Decode the token buffer and return the text, mapping tokenizer errors.
     fn decode_tokens(&self, tokens: &[u32]) -> Result<String, EngineError> {
         self.tokenizer
@@ -282,36 +237,43 @@ impl SimpleEngine {
             self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut tokens: Vec<u32> = Vec::new();
-        let first_token_id: u32 = current_token.item();
-        tokens.push(first_token_id);
+        let has_stop_sequences = !stop_sequences.is_empty();
 
-        let first_decoded = self.decode_tokens(&tokens)?;
-
-        let condition = self.check_termination(
-            first_token_id,
-            1,
-            max_tokens,
-            &first_decoded,
-            stop_sequences,
-        );
-
-        if condition.is_finished() {
-            let text = match &condition {
-                FinishCondition::StopSequence(truncated) => truncated.clone(),
-                FinishCondition::Eos | FinishCondition::MaxTokens | FinishCondition::None => {
-                    first_decoded
-                }
-            };
-            return Ok(GenerationOutput {
-                text,
-                finish_reason: condition.reason_str().unwrap_or("stop").to_owned(),
-                prompt_tokens: prompt_len,
-                completion_tokens: 1,
-            });
-        }
-
-        // Decode loop
         loop {
+            let token_id: u32 = current_token.item();
+            tokens.push(token_id);
+            let completion_len = Self::completion_len(&tokens)?;
+
+            if self.eos_token_ids.contains(&token_id) {
+                return Ok(GenerationOutput {
+                    text: self.decode_tokens(&tokens)?,
+                    finish_reason: "stop".to_owned(),
+                    prompt_tokens: prompt_len,
+                    completion_tokens: completion_len,
+                });
+            }
+
+            if has_stop_sequences {
+                let text = self.decode_tokens(&tokens)?;
+                if let Some(truncated) = check_stop_sequences(&text, stop_sequences) {
+                    return Ok(GenerationOutput {
+                        text: truncated,
+                        finish_reason: "stop".to_owned(),
+                        prompt_tokens: prompt_len,
+                        completion_tokens: completion_len,
+                    });
+                }
+            }
+
+            if completion_len >= max_tokens {
+                return Ok(GenerationOutput {
+                    text: self.decode_tokens(&tokens)?,
+                    finish_reason: "length".to_owned(),
+                    prompt_tokens: prompt_len,
+                    completion_tokens: completion_len,
+                });
+            }
+
             current_token = Self::decode_step(
                 &current_token,
                 &mut prepared.model,
@@ -321,28 +283,8 @@ impl SimpleEngine {
             )?;
             async_eval([&current_token]).map_err(EngineError::Mlx)?;
 
-            let token_id: u32 = current_token.item();
-            tokens.push(token_id);
-
-            let completion_len = Self::completion_len(&tokens)?;
-            let text = self.decode_tokens(&tokens)?;
-
-            let loop_condition =
-                self.check_termination(token_id, completion_len, max_tokens, &text, stop_sequences);
-
-            if loop_condition.is_finished() {
-                let final_text = match &loop_condition {
-                    FinishCondition::StopSequence(truncated) => truncated.clone(),
-                    FinishCondition::Eos | FinishCondition::MaxTokens | FinishCondition::None => {
-                        text
-                    }
-                };
-                return Ok(GenerationOutput {
-                    text: final_text,
-                    finish_reason: loop_condition.reason_str().unwrap_or("stop").to_owned(),
-                    prompt_tokens: prompt_len,
-                    completion_tokens: completion_len,
-                });
+            if tokens.len() % 32 == 0 {
+                eval([&current_token]).map_err(EngineError::Mlx)?;
             }
         }
     }
