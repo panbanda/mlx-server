@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.7](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.6...mlx-server-v0.1.7) (2026-02-20)
+
+
+### Features
+
+* resolve HuggingFace model IDs from local cache ([#12](https://github.com/panbanda/mlx-server/issues/12)) ([5ed1949](https://github.com/panbanda/mlx-server/commit/5ed1949a358f4a954bb406c8f4fc8e0c1e3f302e))
+
+
+### Bug Fixes
+
+* handle edge cases in model resolver ([#13](https://github.com/panbanda/mlx-server/issues/13)) ([b1a212f](https://github.com/panbanda/mlx-server/commit/b1a212fcccedd58b55321c52fce2fae417253996))
+
 ## [0.1.6](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.5...mlx-server-v0.1.6) (2026-02-19)
 
 
