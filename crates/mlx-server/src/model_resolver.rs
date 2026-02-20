@@ -22,6 +22,11 @@ pub fn resolve(path: &str) -> Result<PathBuf, String> {
         return Ok(expanded);
     }
 
+    // Tilde paths are explicit filesystem references, not HF model IDs.
+    if path.starts_with("~/") {
+        return Err(format!("model directory not found: {}", expanded.display()));
+    }
+
     resolve_with_cache(path, default_hf_cache().as_deref())
 }
 
@@ -71,22 +76,45 @@ fn resolve_hf_snapshot(cache_root: &Path, org: &str, name: &str) -> Result<PathB
 }
 
 fn default_hf_cache() -> Option<PathBuf> {
-    // Resolution order matches the HuggingFace Python SDK:
-    // 1. $HF_HUB_CACHE          (direct cache path)
-    // 2. $HUGGINGFACE_HUB_CACHE  (legacy alias)
-    // 3. $HF_HOME/hub            (home override)
-    // 4. ~/.cache/huggingface/hub (default)
-    if let Ok(cache) = std::env::var("HF_HUB_CACHE") {
+    let env = |key| std::env::var(key).ok();
+    hf_cache_from_env(
+        env("HF_HUB_CACHE").as_deref(),
+        env("HUGGINGFACE_HUB_CACHE").as_deref(),
+        env("HF_HOME").as_deref(),
+    )
+    .or_else(|| {
+        directories::BaseDirs::new()
+            .map(|d| d.home_dir().join(".cache").join("huggingface").join("hub"))
+    })
+}
+
+/// Testable env var resolution without reading actual environment.
+///
+/// Resolution order matches the HuggingFace Python SDK:
+/// 1. `HF_HUB_CACHE`          (direct cache path)
+/// 2. `HUGGINGFACE_HUB_CACHE`  (legacy alias)
+/// 3. `HF_HOME` + `/hub`       (home override)
+///
+/// Empty or whitespace-only values are treated as unset.
+fn hf_cache_from_env(
+    hub_cache: Option<&str>,
+    legacy_cache: Option<&str>,
+    hf_home: Option<&str>,
+) -> Option<PathBuf> {
+    fn non_empty(v: Option<&str>) -> Option<&str> {
+        v.filter(|s| !s.trim().is_empty())
+    }
+
+    if let Some(cache) = non_empty(hub_cache) {
         return Some(PathBuf::from(cache));
     }
-    if let Ok(cache) = std::env::var("HUGGINGFACE_HUB_CACHE") {
+    if let Some(cache) = non_empty(legacy_cache) {
         return Some(PathBuf::from(cache));
     }
-    if let Ok(hf_home) = std::env::var("HF_HOME") {
-        return Some(PathBuf::from(hf_home).join("hub"));
+    if let Some(home) = non_empty(hf_home) {
+        return Some(PathBuf::from(home).join("hub"));
     }
-    directories::BaseDirs::new()
-        .map(|d| d.home_dir().join(".cache").join("huggingface").join("hub"))
+    None
 }
 
 #[cfg(test)]
@@ -164,6 +192,63 @@ mod tests {
     fn test_resolve_tilde_expansion_nonexistent_is_err() {
         let result = resolve("~/nonexistent_model_dir_12345");
         assert!(result.is_err());
+    }
+
+    // --- hf_cache_from_env tests ---
+
+    #[test]
+    fn test_hf_cache_from_env_hf_hub_cache_takes_priority() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = hf_cache_from_env(
+            Some(dir.path().to_str().unwrap()),
+            Some("/legacy"),
+            Some("/home"),
+        );
+        assert_eq!(result, Some(dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_hf_cache_from_env_legacy_over_hf_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = hf_cache_from_env(None, Some(dir.path().to_str().unwrap()), Some("/home"));
+        assert_eq!(result, Some(dir.path().to_path_buf()));
+    }
+
+    #[test]
+    fn test_hf_cache_from_env_hf_home_appends_hub() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = hf_cache_from_env(None, None, Some(dir.path().to_str().unwrap()));
+        assert_eq!(result, Some(dir.path().join("hub")));
+    }
+
+    #[test]
+    fn test_hf_cache_from_env_none_when_all_unset() {
+        let result = hf_cache_from_env(None, None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hf_cache_from_env_empty_string_ignored() {
+        let result = hf_cache_from_env(Some(""), Some(""), Some(""));
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_hf_cache_from_env_whitespace_only_ignored() {
+        let result = hf_cache_from_env(Some("  "), None, None);
+        assert!(result.is_none());
+    }
+
+    // --- tilde expansion error message test ---
+
+    #[test]
+    fn test_resolve_tilde_path_error_mentions_expanded_path() {
+        let result = resolve("~/nonexistent_model_dir_12345");
+        let err = result.unwrap_err();
+        assert!(
+            !err.contains("HuggingFace cache"),
+            "tilde path error should not mention HF cache, got: {err}"
+        );
     }
 
     #[test]
