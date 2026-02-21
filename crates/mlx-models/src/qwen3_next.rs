@@ -2641,6 +2641,7 @@ mod tests {
     /// Benchmark: chain 48 layers of 3x gather_qmm + SwiGLU, single eval.
     /// Compare with Python's 0.378ms (48 layers, single eval).
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_gather_qmm_chain() {
         let num_experts = 512;
         let d = 2048;
@@ -2928,6 +2929,7 @@ mod tests {
     /// Benchmark: 200 chained quantized_matmul ops (matching Python bench).
     /// Python: build=0.05ms eval=1.40ms total=1.45ms
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_chained_quantized_matmul() {
         use mlx_rs::Dtype;
 
@@ -3002,6 +3004,7 @@ mod tests {
     /// Simulate 48-layer forward pass with per-layer weights.
     /// Python shared-weight sim: build=0.59ms eval=8.08ms
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_simulated_forward() {
         use mlx_rs::Dtype;
 
@@ -3320,6 +3323,7 @@ mod tests {
 
     /// Test gather_qmm with loaded vs random weights to isolate memory effects.
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_gather_qmm_loaded_vs_random() {
         use mlx_rs::Dtype;
         let model_dir = "/Users/panbanda/.cache/huggingface/hub/models--mlx-community--Qwen3-Coder-Next-4bit/snapshots/7b9321eabb85ce79625cac3f61ea691e4ea984b5";
@@ -3442,6 +3446,7 @@ mod tests {
     /// C) Inline forward with real quantized_matmul attention (original fast path)
     /// D) Extract weights from modules into tuples, run inline (tests Param<Array> access)
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_module_vs_inline() {
         use mlx_rs::Dtype;
         use mlx_rs::module::Param;
@@ -8922,6 +8927,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_metal_kernel_gather_qmm_interleaving() {
         let b: i32 = 1;
         let d: i32 = 2048;
@@ -9143,6 +9149,7 @@ mod tests {
 
     /// Test eval scaling with graph size using quantized_matmul + rms_norm
     #[test]
+    #[ignore = "benchmark, requires GPU"]
     fn bench_eval_scaling() {
         let b: i32 = 1;
         let d: i32 = 2048;
