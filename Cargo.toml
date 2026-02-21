@@ -11,7 +11,7 @@ repository = "https://github.com/panbanda/mlx-server"
 homepage = "https://github.com/panbanda/mlx-server"
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+unsafe_code = "deny"
 non_ascii_idents = "forbid"
 
 [workspace.lints.clippy]
@@ -80,6 +80,7 @@ mlx-models = { path = "crates/mlx-models" }
 
 # MLX
 mlx-rs = "0.25.3"
+mlx-sys = "=0.2.0"
 
 # HTTP
 axum = { version = "0.8", features = ["macros"] }
@@ -114,6 +115,10 @@ async-stream = "0.3"
 # Utilities
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
+
+[patch.crates-io]
+mlx-rs = { git = "https://github.com/panbanda/mlx-rs.git", rev = "801b114e" }
+mlx-sys = { git = "https://github.com/panbanda/mlx-rs.git", rev = "801b114e" }
 
 [profile.release]
 lto = "thin"

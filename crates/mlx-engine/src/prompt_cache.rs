@@ -146,11 +146,11 @@ fn hash_tokens(tokens: &[u32]) -> u64 {
 mod tests {
     use super::*;
     use mlx_models::AnyCache;
-    use mlx_models::cache::ConcatKeyValueCache;
+    use mlx_models::cache::SteppingKeyValueCache;
 
     fn make_dummy_cache(num_layers: usize) -> AnyCache {
-        let kv: Vec<Option<ConcatKeyValueCache>> = (0..num_layers)
-            .map(|_| Some(ConcatKeyValueCache::new()))
+        let kv: Vec<Option<SteppingKeyValueCache>> = (0..num_layers)
+            .map(|_| Some(SteppingKeyValueCache::new()))
             .collect();
         AnyCache::KV(kv)
     }

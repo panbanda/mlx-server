@@ -26,7 +26,7 @@ pub use transformer::{Model, ModelArgs};
 #[derive(Debug, Clone)]
 pub enum AnyCache {
     /// Standard KV cache for transformer models (Qwen2/Llama/Mistral).
-    KV(Vec<Option<cache::ConcatKeyValueCache>>),
+    KV(Vec<Option<cache::SteppingKeyValueCache>>),
     /// Hybrid KV+SSM cache for `qwen3_next`.
     Hybrid(Vec<Option<LayerCache>>),
 }
@@ -68,7 +68,7 @@ impl AnyModel {
                 };
                 AnyCache::KV(
                     (0..n_layers)
-                        .map(|_| Some(cache::ConcatKeyValueCache::new()))
+                        .map(|_| Some(cache::SteppingKeyValueCache::new()))
                         .collect(),
                 )
             }
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn any_cache_kv_variant() {
-        let cache = AnyCache::KV(vec![None, Some(cache::ConcatKeyValueCache::new())]);
+        let cache = AnyCache::KV(vec![None, Some(cache::SteppingKeyValueCache::new())]);
         match &cache {
             AnyCache::KV(layers) => assert_eq!(layers.len(), 2),
             AnyCache::Hybrid(_) => panic!("Expected KV variant"),
