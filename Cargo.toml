@@ -116,6 +116,10 @@ async-stream = "0.3"
 uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+[patch.crates-io]
+mlx-rs = { git = "ssh://git@github.com/panbanda/mlx-rs.git", branch = "upgrade/mlx-c-0.5.0" }
+mlx-sys = { git = "ssh://git@github.com/panbanda/mlx-rs.git", branch = "upgrade/mlx-c-0.5.0" }
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -3,9 +3,10 @@ use std::sync::{Mutex, MutexGuard};
 
 use mlx_models::{AnyCache, AnyModel, sample};
 use mlx_rs::{
-    Array,
+    Array, Stream,
     ops::indexing::{IndexOp, NewAxis},
     transforms::{async_eval, eval},
+    with_new_default_stream,
 };
 use tokenizers::Tokenizer;
 
@@ -19,6 +20,36 @@ use crate::{
 
 /// Default maximum number of cached prefixes.
 const DEFAULT_PREFIX_CACHE_SIZE: usize = 8;
+
+/// Pin model weights in GPU memory to prevent OS eviction.
+#[allow(unsafe_code)]
+fn set_wired_limit_to_max() {
+    unsafe {
+        let mut info = mlx_sys::mlx_device_info_new();
+        let mut dev = mlx_sys::mlx_device_new();
+        mlx_sys::mlx_get_default_device(&raw mut dev);
+        if mlx_sys::mlx_device_info_get(&raw mut (info), dev) == 0 {
+            let mut max_rec: usize = 0;
+            let key = c"max_recommended_working_set_size";
+            if mlx_sys::mlx_device_info_get_size(
+                &raw mut max_rec,
+                info,
+                key.as_ptr(),
+            ) == 0
+                && max_rec > 0
+            {
+                let mut old_limit: usize = 0;
+                mlx_sys::mlx_set_wired_limit(&raw mut old_limit, max_rec);
+                tracing::info!(
+                    wired_limit_mb = max_rec / (1024 * 1024),
+                    "Set wired memory limit"
+                );
+            }
+            mlx_sys::mlx_device_info_free(info);
+        }
+        mlx_sys::mlx_device_free(dev);
+    }
+}
 
 /// Simple single-request inference engine with prefix KV caching.
 ///
@@ -54,6 +85,8 @@ impl SimpleEngine {
         let template = ChatTemplateRenderer::from_model_dir(model_dir)?;
 
         let eos_token_ids = extract_eos_tokens(model_dir);
+
+        set_wired_limit_to_max();
 
         tracing::info!(
             model_name = %model_name,
@@ -231,20 +264,73 @@ impl SimpleEngine {
             });
         }
 
+        // Set a task-local default stream so every MLX operation reuses it
+        // instead of creating a new Stream (5 FFI calls) per operation.
+        with_new_default_stream(Stream::new(), || {
+            self.generate_inner(prompt_tokens, max_tokens, temperature, top_p, stop_sequences)
+        })
+    }
+
+    fn generate_inner(
+        &self,
+        prompt_tokens: &[u32],
+        max_tokens: u32,
+        temperature: f32,
+        top_p: f32,
+        stop_sequences: &[String],
+    ) -> Result<GenerationOutput, EngineError> {
         let mut prepared = self.prepare_generation(prompt_tokens)?;
         let prompt_len = prepared.prompt_len;
-        let mut current_token =
+        let current_token =
             self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut tokens: Vec<u32> = Vec::new();
         let has_stop_sequences = !stop_sequences.is_empty();
 
+        // Pipelined decode: build step N+2's graph while GPU computes step N+1.
+        let mut next_token = Self::decode_step(
+            &current_token,
+            &mut prepared.model,
+            &mut prepared.cache,
+            temperature,
+            top_p,
+        )?;
+        async_eval([&next_token]).map_err(EngineError::Mlx)?;
+
+        let mut total_forward_ns: u128 = 0;
+        let mut total_eval_ns: u128 = 0;
+        let mut total_item_ns: u128 = 0;
+        let mut total_other_ns: u128 = 0;
+        let mut step_count: u32 = 0;
+
         loop {
-            let token_id: u32 = current_token.item();
+            let t0 = std::time::Instant::now();
+            let following = Self::decode_step(
+                &next_token,
+                &mut prepared.model,
+                &mut prepared.cache,
+                temperature,
+                top_p,
+            )?;
+            let t1 = std::time::Instant::now();
+            async_eval([&following]).map_err(EngineError::Mlx)?;
+            let t2 = std::time::Instant::now();
+
+            let token_id: u32 = next_token.item();
+            let t3 = std::time::Instant::now();
+
             tokens.push(token_id);
             let completion_len = Self::completion_len(&tokens)?;
+            let t4 = std::time::Instant::now();
+
+            total_forward_ns += (t1 - t0).as_nanos();
+            total_eval_ns += (t2 - t1).as_nanos();
+            total_item_ns += (t3 - t2).as_nanos();
+            total_other_ns += (t4 - t3).as_nanos();
+            step_count += 1;
 
             if self.eos_token_ids.contains(&token_id) {
+                self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
                 return Ok(GenerationOutput {
                     text: self.decode_tokens(&tokens)?,
                     finish_reason: "stop".to_owned(),
@@ -256,6 +342,7 @@ impl SimpleEngine {
             if has_stop_sequences {
                 let text = self.decode_tokens(&tokens)?;
                 if let Some(truncated) = check_stop_sequences(&text, stop_sequences) {
+                    self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
                     return Ok(GenerationOutput {
                         text: truncated,
                         finish_reason: "stop".to_owned(),
@@ -266,6 +353,7 @@ impl SimpleEngine {
             }
 
             if completion_len >= max_tokens {
+                self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
                 return Ok(GenerationOutput {
                     text: self.decode_tokens(&tokens)?,
                     finish_reason: "length".to_owned(),
@@ -274,18 +362,22 @@ impl SimpleEngine {
                 });
             }
 
-            current_token = Self::decode_step(
-                &current_token,
-                &mut prepared.model,
-                &mut prepared.cache,
-                temperature,
-                top_p,
-            )?;
-            async_eval([&current_token]).map_err(EngineError::Mlx)?;
+            next_token = following;
+        }
+    }
 
-            if tokens.len() % 32 == 0 {
-                eval([&current_token]).map_err(EngineError::Mlx)?;
-            }
+    fn log_decode_timing(&self, steps: u32, forward_ns: u128, eval_ns: u128, item_ns: u128, other_ns: u128) {
+        if steps > 0 {
+            let s = steps as f64;
+            tracing::info!(
+                steps,
+                forward_ms = format!("{:.2}", forward_ns as f64 / s / 1e6),
+                eval_ms = format!("{:.2}", eval_ns as f64 / s / 1e6),
+                item_ms = format!("{:.2}", item_ns as f64 / s / 1e6),
+                other_ms = format!("{:.2}", other_ns as f64 / s / 1e6),
+                total_ms = format!("{:.2}", (forward_ns + eval_ns + item_ns + other_ns) as f64 / s / 1e6),
+                "Decode loop timing (per step avg)"
+            );
         }
     }
 
@@ -317,9 +409,31 @@ impl SimpleEngine {
             return Ok(());
         }
 
+        with_new_default_stream(Stream::new(), || {
+            self.generate_streaming_inner(
+                prompt_tokens,
+                max_tokens,
+                temperature,
+                top_p,
+                stop_sequences,
+                sender,
+            )
+        })
+    }
+
+    #[allow(clippy::too_many_lines, clippy::significant_drop_tightening)]
+    fn generate_streaming_inner(
+        &self,
+        prompt_tokens: &[u32],
+        max_tokens: u32,
+        temperature: f32,
+        top_p: f32,
+        stop_sequences: &[String],
+        sender: &tokio::sync::mpsc::Sender<StreamingOutput>,
+    ) -> Result<(), EngineError> {
         let mut prepared = self.prepare_generation(prompt_tokens)?;
         let prompt_len = prepared.prompt_len;
-        let mut current_token =
+        let current_token =
             self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut all_tokens: Vec<u32> = Vec::new();
@@ -363,18 +477,27 @@ impl SimpleEngine {
             return Ok(());
         }
 
-        // Decode loop
+        // Pipelined decode loop: build step N+2 while GPU computes step N+1
+        let mut next_token = Self::decode_step(
+            &current_token,
+            &mut prepared.model,
+            &mut prepared.cache,
+            temperature,
+            top_p,
+        )?;
+        async_eval([&next_token]).map_err(EngineError::Mlx)?;
+
         loop {
-            current_token = Self::decode_step(
-                &current_token,
+            let following = Self::decode_step(
+                &next_token,
                 &mut prepared.model,
                 &mut prepared.cache,
                 temperature,
                 top_p,
             )?;
-            async_eval([&current_token]).map_err(EngineError::Mlx)?;
+            async_eval([&following]).map_err(EngineError::Mlx)?;
 
-            let token_id: u32 = current_token.item();
+            let token_id: u32 = next_token.item();
             all_tokens.push(token_id);
 
             let completion_len = Self::completion_len(&all_tokens)?;
@@ -430,6 +553,8 @@ impl SimpleEngine {
             if step_finished {
                 break;
             }
+
+            next_token = following;
         }
 
         Ok(())

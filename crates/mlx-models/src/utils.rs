@@ -37,6 +37,7 @@ pub(crate) fn scaled_dot_product_attention(
         values,
         scale,
         mask.map(ScaledDotProductAttentionMask::Array),
+        None::<&Array>,
     )
 }
 
@@ -91,7 +92,7 @@ where
 #[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::cache::ConcatKeyValueCache;
+    use crate::cache::SteppingKeyValueCache;
 
     #[test]
     fn test_create_causal_mask_n4() {
@@ -150,7 +151,7 @@ mod tests {
     fn test_create_attention_mask_single_token() {
         // T=1: no mask needed
         let h = Array::zeros::<f32>(&[1, 1, 64]).unwrap();
-        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let cache: Vec<Option<SteppingKeyValueCache>> = vec![];
         let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
         assert!(result.is_none());
     }
@@ -159,7 +160,7 @@ mod tests {
     fn test_create_attention_mask_multi_token_as_array() {
         // T=3, no cache: should produce an array mask
         let h = Array::zeros::<f32>(&[1, 3, 64]).unwrap();
-        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let cache: Vec<Option<SteppingKeyValueCache>> = vec![];
         let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
         assert!(result.is_some());
         match result.unwrap() {
@@ -172,7 +173,7 @@ mod tests {
     fn test_create_attention_mask_multi_token_as_causal() {
         // T=3, as_array=false: should return Causal variant
         let h = Array::zeros::<f32>(&[1, 3, 64]).unwrap();
-        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let cache: Vec<Option<SteppingKeyValueCache>> = vec![];
         let result = create_attention_mask(&h, &cache, Some(false)).unwrap();
         assert!(result.is_some());
         assert!(matches!(result.unwrap(), AttentionMask::Causal));
@@ -182,7 +183,7 @@ mod tests {
     fn test_create_attention_mask_default_is_causal() {
         // as_array=None defaults to false (Causal)
         let h = Array::zeros::<f32>(&[1, 4, 64]).unwrap();
-        let cache: Vec<Option<ConcatKeyValueCache>> = vec![];
+        let cache: Vec<Option<SteppingKeyValueCache>> = vec![];
         let result = create_attention_mask(&h, &cache, None).unwrap();
         assert!(matches!(result.unwrap(), AttentionMask::Causal));
     }
@@ -191,13 +192,13 @@ mod tests {
     fn test_create_attention_mask_with_cache_offset() {
         // Pre-populate cache so offset > 0
         let h = Array::zeros::<f32>(&[1, 2, 64]).unwrap();
-        let mut kv_cache = ConcatKeyValueCache::new();
+        let mut kv_cache = SteppingKeyValueCache::new();
         let keys = Array::zeros::<f32>(&[1, 2, 5, 8]).unwrap();
         let values = Array::zeros::<f32>(&[1, 2, 5, 8]).unwrap();
         kv_cache.update_and_fetch(keys, values).unwrap();
         assert_eq!(kv_cache.offset(), 5);
 
-        let cache: Vec<Option<ConcatKeyValueCache>> = vec![Some(kv_cache)];
+        let cache: Vec<Option<SteppingKeyValueCache>> = vec![Some(kv_cache)];
         let result = create_attention_mask(&h, &cache, Some(true)).unwrap();
         match result.unwrap() {
             AttentionMask::Array(a) => {
