@@ -259,31 +259,34 @@ impl KeyValueCache for SteppingKeyValueCache {
             let new_k = ops::zeros_dtype(&[b, n_kv_heads, new_slots, k_head_dim], keys.dtype())?;
             let new_v = ops::zeros_dtype(&[b, n_kv_heads, new_slots, v_head_dim], values.dtype())?;
 
-            if let (Some(old_k), Some(old_v)) = (self.keys.take(), self.values.take()) {
-                let (trimmed_k, trimmed_v) = if prev % self.step != 0 {
-                    (slice_axis2(&old_k, 0, prev)?, slice_axis2(&old_v, 0, prev)?)
-                } else {
-                    (old_k, old_v)
-                };
-                self.keys = Some(concatenate_axis(&[trimmed_k, new_k], 2)?);
-                self.values = Some(concatenate_axis(&[trimmed_v, new_v], 2)?);
-            } else {
-                self.keys = Some(new_k);
-                self.values = Some(new_v);
-            }
+            let (grown_k, grown_v) = match (self.keys.as_ref(), self.values.as_ref()) {
+                (Some(old_k), Some(old_v)) => {
+                    let (trimmed_k, trimmed_v) = if prev % self.step != 0 {
+                        (slice_axis2(old_k, 0, prev)?, slice_axis2(old_v, 0, prev)?)
+                    } else {
+                        (old_k.clone(), old_v.clone())
+                    };
+                    let cat_k = concatenate_axis(&[trimmed_k, new_k], 2)?;
+                    let cat_v = concatenate_axis(&[trimmed_v, new_v], 2)?;
+                    (cat_k, cat_v)
+                }
+                _ => (new_k, new_v),
+            };
+            self.keys = Some(grown_k);
+            self.values = Some(grown_v);
         }
 
         let k = self
             .keys
-            .take()
+            .as_ref()
             .ok_or_else(|| Exception::custom("Keys cannot be None after grow"))?;
         let v = self
             .values
-            .take()
+            .as_ref()
             .ok_or_else(|| Exception::custom("Values cannot be None after grow"))?;
 
-        let updated_k = slice_update_axis2(&k, &keys, prev, new_tokens)?;
-        let updated_v = slice_update_axis2(&v, &values, prev, new_tokens)?;
+        let updated_k = slice_update_axis2(k, &keys, prev, new_tokens)?;
+        let updated_v = slice_update_axis2(v, &values, prev, new_tokens)?;
         self.keys = Some(updated_k);
         self.values = Some(updated_v);
 
