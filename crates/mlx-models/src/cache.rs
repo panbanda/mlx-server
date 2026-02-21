@@ -123,7 +123,7 @@ impl KeyValueCache for ConcatKeyValueCache {
 
 /// Pre-allocated KV cache that grows in chunks, avoiding per-token allocation.
 ///
-/// Matches Python mlx_lm's `KVCache`: pre-allocates 256 slots at a time and
+/// Matches Python `mlx_lm`'s `KVCache`: pre-allocates 256 slots at a time and
 /// uses `mlx_slice_update` for writes instead of concatenation every token.
 /// Keys/values have shape `[B, n_heads, seq_len, head_dim]` with sequence on axis 2.
 #[derive(Debug, Clone)]
@@ -152,9 +152,10 @@ impl SteppingKeyValueCache {
 }
 
 /// Slice an array along axis 2: `arr[..., start:end, ...]`
-#[allow(unsafe_code)]
+#[allow(unsafe_code, clippy::indexing_slicing)]
 fn slice_axis2(arr: &Array, start: i32, end: i32) -> Result<Array, Exception> {
     let ndim = arr.ndim();
+    debug_assert!(ndim >= 3, "slice_axis2 requires ndim >= 3, got {ndim}");
     let mut starts = vec![0i32; ndim];
     let mut ends: Vec<i32> = arr.shape().to_vec();
     let strides = vec![1i32; ndim];
@@ -172,7 +173,7 @@ fn slice_axis2(arr: &Array, start: i32, end: i32) -> Result<Array, Exception> {
             ends.len(),
             strides.as_ptr(),
             strides.len(),
-            Stream::default().as_ptr(),
+            Stream::task_local_or_default().as_ptr(),
         );
         if status != 0 {
             mlx_sys::mlx_array_free(result);
@@ -183,7 +184,7 @@ fn slice_axis2(arr: &Array, start: i32, end: i32) -> Result<Array, Exception> {
 }
 
 /// Write `update` into `target` at `[..., start:start+n, ...]` on axis 2.
-#[allow(unsafe_code)]
+#[allow(unsafe_code, clippy::indexing_slicing)]
 fn slice_update_axis2(
     target: &Array,
     update: &Array,
@@ -191,6 +192,10 @@ fn slice_update_axis2(
     n: i32,
 ) -> Result<Array, Exception> {
     let ndim = target.ndim();
+    debug_assert!(
+        ndim >= 3,
+        "slice_update_axis2 requires ndim >= 3, got {ndim}"
+    );
     let mut starts = vec![0i32; ndim];
     let mut ends: Vec<i32> = target.shape().to_vec();
     let strides = vec![1i32; ndim];
@@ -209,7 +214,7 @@ fn slice_update_axis2(
             ends.len(),
             strides.as_ptr(),
             strides.len(),
-            Stream::default().as_ptr(),
+            Stream::task_local_or_default().as_ptr(),
         );
         if status != 0 {
             mlx_sys::mlx_array_free(result);
@@ -228,6 +233,7 @@ impl KeyValueCache for SteppingKeyValueCache {
         None
     }
 
+    #[allow(clippy::indexing_slicing)]
     fn update_and_fetch(
         &mut self,
         keys: Array,
@@ -236,10 +242,10 @@ impl KeyValueCache for SteppingKeyValueCache {
         let prev = self.offset;
         let new_tokens = keys.shape()[2];
 
-        let need_grow = match &self.keys {
-            None => true,
-            Some(k) => (prev + new_tokens) > k.shape()[2],
-        };
+        let need_grow = self
+            .keys
+            .as_ref()
+            .is_none_or(|k| (prev + new_tokens) > k.shape()[2]);
 
         if need_grow {
             let b = keys.shape()[0];
@@ -250,21 +256,12 @@ impl KeyValueCache for SteppingKeyValueCache {
             let n_steps = (self.step + new_tokens - 1) / self.step;
             let new_slots = n_steps * self.step;
 
-            let new_k = ops::zeros_dtype(
-                &[b, n_kv_heads, new_slots, k_head_dim],
-                keys.dtype(),
-            )?;
-            let new_v = ops::zeros_dtype(
-                &[b, n_kv_heads, new_slots, v_head_dim],
-                values.dtype(),
-            )?;
+            let new_k = ops::zeros_dtype(&[b, n_kv_heads, new_slots, k_head_dim], keys.dtype())?;
+            let new_v = ops::zeros_dtype(&[b, n_kv_heads, new_slots, v_head_dim], values.dtype())?;
 
             if let (Some(old_k), Some(old_v)) = (self.keys.take(), self.values.take()) {
                 let (trimmed_k, trimmed_v) = if prev % self.step != 0 {
-                    (
-                        slice_axis2(&old_k, 0, prev)?,
-                        slice_axis2(&old_v, 0, prev)?,
-                    )
+                    (slice_axis2(&old_k, 0, prev)?, slice_axis2(&old_v, 0, prev)?)
                 } else {
                     (old_k, old_v)
                 };
@@ -276,11 +273,13 @@ impl KeyValueCache for SteppingKeyValueCache {
             }
         }
 
-        self.offset = prev + new_tokens;
-
-        let k = self.keys.take()
+        let k = self
+            .keys
+            .take()
             .ok_or_else(|| Exception::custom("Keys cannot be None after grow"))?;
-        let v = self.values.take()
+        let v = self
+            .values
+            .take()
             .ok_or_else(|| Exception::custom("Values cannot be None after grow"))?;
 
         let updated_k = slice_update_axis2(&k, &keys, prev, new_tokens)?;
@@ -288,14 +287,18 @@ impl KeyValueCache for SteppingKeyValueCache {
         self.keys = Some(updated_k);
         self.values = Some(updated_v);
 
+        self.offset = prev + new_tokens;
+
         let result_k = slice_axis2(
-            self.keys.as_ref()
+            self.keys
+                .as_ref()
                 .ok_or_else(|| Exception::custom("Keys cannot be None after update"))?,
             0,
             self.offset,
         )?;
         let result_v = slice_axis2(
-            self.values.as_ref()
+            self.values
+                .as_ref()
                 .ok_or_else(|| Exception::custom("Values cannot be None after update"))?,
             0,
             self.offset,
@@ -306,7 +309,7 @@ impl KeyValueCache for SteppingKeyValueCache {
 }
 
 #[cfg(test)]
-#[allow(clippy::panic, clippy::unwrap_used)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use mlx_rs::Array;

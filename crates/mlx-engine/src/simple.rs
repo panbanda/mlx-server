@@ -31,11 +31,7 @@ fn set_wired_limit_to_max() {
         if mlx_sys::mlx_device_info_get(&raw mut (info), dev) == 0 {
             let mut max_rec: usize = 0;
             let key = c"max_recommended_working_set_size";
-            if mlx_sys::mlx_device_info_get_size(
-                &raw mut max_rec,
-                info,
-                key.as_ptr(),
-            ) == 0
+            if mlx_sys::mlx_device_info_get_size(&raw mut max_rec, info, key.as_ptr()) == 0
                 && max_rec > 0
             {
                 let mut old_limit: usize = 0;
@@ -45,8 +41,8 @@ fn set_wired_limit_to_max() {
                     "Set wired memory limit"
                 );
             }
-            mlx_sys::mlx_device_info_free(info);
         }
+        mlx_sys::mlx_device_info_free(info);
         mlx_sys::mlx_device_free(dev);
     }
 }
@@ -267,10 +263,17 @@ impl SimpleEngine {
         // Set a task-local default stream so every MLX operation reuses it
         // instead of creating a new Stream (5 FFI calls) per operation.
         with_new_default_stream(Stream::new(), || {
-            self.generate_inner(prompt_tokens, max_tokens, temperature, top_p, stop_sequences)
+            self.generate_inner(
+                prompt_tokens,
+                max_tokens,
+                temperature,
+                top_p,
+                stop_sequences,
+            )
         })
     }
 
+    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)]
     fn generate_inner(
         &self,
         prompt_tokens: &[u32],
@@ -281,11 +284,41 @@ impl SimpleEngine {
     ) -> Result<GenerationOutput, EngineError> {
         let mut prepared = self.prepare_generation(prompt_tokens)?;
         let prompt_len = prepared.prompt_len;
-        let current_token =
-            self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
+        let current_token = self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
-        let mut tokens: Vec<u32> = Vec::new();
+        // Capture T1 (already eval'd inside run_prefill).
+        let first_token_id: u32 = current_token.item();
+        let mut tokens: Vec<u32> = vec![first_token_id];
         let has_stop_sequences = !stop_sequences.is_empty();
+
+        // Handle T1 termination before entering the pipeline.
+        if self.eos_token_ids.contains(&first_token_id) {
+            return Ok(GenerationOutput {
+                text: self.decode_tokens(&tokens)?,
+                finish_reason: "stop".to_owned(),
+                prompt_tokens: prompt_len,
+                completion_tokens: 1,
+            });
+        }
+        if has_stop_sequences {
+            let text = self.decode_tokens(&tokens)?;
+            if let Some(truncated) = check_stop_sequences(&text, stop_sequences) {
+                return Ok(GenerationOutput {
+                    text: truncated,
+                    finish_reason: "stop".to_owned(),
+                    prompt_tokens: prompt_len,
+                    completion_tokens: 1,
+                });
+            }
+        }
+        if max_tokens <= 1 {
+            return Ok(GenerationOutput {
+                text: self.decode_tokens(&tokens)?,
+                finish_reason: "length".to_owned(),
+                prompt_tokens: prompt_len,
+                completion_tokens: 1,
+            });
+        }
 
         // Pipelined decode: build step N+2's graph while GPU computes step N+1.
         let mut next_token = Self::decode_step(
@@ -330,7 +363,13 @@ impl SimpleEngine {
             step_count += 1;
 
             if self.eos_token_ids.contains(&token_id) {
-                self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
+                Self::log_decode_timing(
+                    step_count,
+                    total_forward_ns,
+                    total_eval_ns,
+                    total_item_ns,
+                    total_other_ns,
+                );
                 return Ok(GenerationOutput {
                     text: self.decode_tokens(&tokens)?,
                     finish_reason: "stop".to_owned(),
@@ -342,7 +381,13 @@ impl SimpleEngine {
             if has_stop_sequences {
                 let text = self.decode_tokens(&tokens)?;
                 if let Some(truncated) = check_stop_sequences(&text, stop_sequences) {
-                    self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
+                    Self::log_decode_timing(
+                        step_count,
+                        total_forward_ns,
+                        total_eval_ns,
+                        total_item_ns,
+                        total_other_ns,
+                    );
                     return Ok(GenerationOutput {
                         text: truncated,
                         finish_reason: "stop".to_owned(),
@@ -353,7 +398,13 @@ impl SimpleEngine {
             }
 
             if completion_len >= max_tokens {
-                self.log_decode_timing(step_count, total_forward_ns, total_eval_ns, total_item_ns, total_other_ns);
+                Self::log_decode_timing(
+                    step_count,
+                    total_forward_ns,
+                    total_eval_ns,
+                    total_item_ns,
+                    total_other_ns,
+                );
                 return Ok(GenerationOutput {
                     text: self.decode_tokens(&tokens)?,
                     finish_reason: "length".to_owned(),
@@ -366,16 +417,26 @@ impl SimpleEngine {
         }
     }
 
-    fn log_decode_timing(&self, steps: u32, forward_ns: u128, eval_ns: u128, item_ns: u128, other_ns: u128) {
+    #[allow(clippy::cast_precision_loss, clippy::as_conversions)]
+    fn log_decode_timing(
+        steps: u32,
+        forward_ns: u128,
+        eval_ns: u128,
+        item_ns: u128,
+        other_ns: u128,
+    ) {
         if steps > 0 {
-            let s = steps as f64;
+            let s = f64::from(steps);
             tracing::info!(
                 steps,
                 forward_ms = format!("{:.2}", forward_ns as f64 / s / 1e6),
                 eval_ms = format!("{:.2}", eval_ns as f64 / s / 1e6),
                 item_ms = format!("{:.2}", item_ns as f64 / s / 1e6),
                 other_ms = format!("{:.2}", other_ns as f64 / s / 1e6),
-                total_ms = format!("{:.2}", (forward_ns + eval_ns + item_ns + other_ns) as f64 / s / 1e6),
+                total_ms = format!(
+                    "{:.2}",
+                    (forward_ns + eval_ns + item_ns + other_ns) as f64 / s / 1e6
+                ),
                 "Decode loop timing (per step avg)"
             );
         }
@@ -433,8 +494,7 @@ impl SimpleEngine {
     ) -> Result<(), EngineError> {
         let mut prepared = self.prepare_generation(prompt_tokens)?;
         let prompt_len = prepared.prompt_len;
-        let current_token =
-            self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
+        let current_token = self.run_prefill(prompt_tokens, &mut prepared, temperature, top_p)?;
 
         let mut all_tokens: Vec<u32> = Vec::new();
         let first_token_id: u32 = current_token.item();

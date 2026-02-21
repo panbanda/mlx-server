@@ -1384,7 +1384,7 @@ dependencies = [
 [[package]]
 name = "mlx-internal-macros"
 version = "0.25.3"
-source = "git+ssh://git@github.com/panbanda/mlx-rs.git?branch=upgrade%2Fmlx-c-0.5.0#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
+source = "git+https://github.com/panbanda/mlx-rs.git?rev=801b114e#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
 dependencies = [
  "darling 0.21.3",
  "itertools 0.14.0",
@@ -1396,7 +1396,7 @@ dependencies = [
 [[package]]
 name = "mlx-macros"
 version = "0.25.3"
-source = "git+ssh://git@github.com/panbanda/mlx-rs.git?branch=upgrade%2Fmlx-c-0.5.0#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
+source = "git+https://github.com/panbanda/mlx-rs.git?rev=801b114e#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
 dependencies = [
  "darling 0.21.3",
  "proc-macro2",
@@ -1421,7 +1421,7 @@ dependencies = [
 [[package]]
 name = "mlx-rs"
 version = "0.25.3"
-source = "git+ssh://git@github.com/panbanda/mlx-rs.git?branch=upgrade%2Fmlx-c-0.5.0#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
+source = "git+https://github.com/panbanda/mlx-rs.git?rev=801b114e#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
 dependencies = [
  "dyn-clone",
  "half",
@@ -1472,7 +1472,7 @@ dependencies = [
 [[package]]
 name = "mlx-sys"
 version = "0.2.0"
-source = "git+ssh://git@github.com/panbanda/mlx-rs.git?branch=upgrade%2Fmlx-c-0.5.0#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
+source = "git+https://github.com/panbanda/mlx-rs.git?rev=801b114e#801b114ecb514535235dbd7cc7d8f32bdb6e44de"
 dependencies = [
  "bindgen",
  "cc",
