@@ -71,6 +71,7 @@ impl Drop for CachedMetalKernel {
 /// Cached `GatedDeltaNet` Metal kernel -- created once, reused for all layers.
 static GATED_DELTA_KERNEL: OnceLock<CachedMetalKernel> = OnceLock::new();
 
+
 use crate::{
     cache::{KeyValueCache, SteppingKeyValueCache},
     error::ModelError,
@@ -272,9 +273,14 @@ impl QEmbedding {
 // SwiGLU activation
 // ---------------------------------------------------------------------------
 
-/// `silu(gate) * x`
+/// `silu(gate) * x` -- uses direct ops to avoid compiled silu FFI overhead.
 fn swiglu(gate: &Array, x: &Array) -> Result<Array, Exception> {
-    nn::silu(gate)?.multiply(x)
+    gate.multiply(nn::sigmoid(gate)?)?.multiply(x)
+}
+
+/// Direct `SiLU`: `x * sigmoid(x)`, bypassing compiled silu per-call overhead.
+fn silu_direct(x: &Array) -> Result<Array, Exception> {
+    x.multiply(nn::sigmoid(x)?)
 }
 
 // ---------------------------------------------------------------------------
@@ -359,9 +365,8 @@ fn gather_qmm(
 
 /// Metal kernel source for the fused `GatedDeltaNet` recurrence.
 ///
-/// Processes all timesteps in one dispatch. Each SIMD group of 32 threads
-/// handles `Dk`/32 elements and uses `simd_sum()` for parallel reduction.
-/// GQA mapping is done inside the kernel via `hk_idx = hv_idx / (Hv / Hk)`.
+/// Computes `g = exp(-exp(a_log) * softplus(a + dt_bias))` and `beta = sigmoid(b)`
+/// inline, then runs the full recurrence -- all in one kernel dispatch.
 ///
 /// Template parameters: `InT` (dtype), `Dk`, `Dv`, `Hk`, `Hv` (int constants).
 /// Grid: `(32, Dv, B * Hv)`, Threadgroup: `(32, 4, 1)`.
@@ -390,21 +395,33 @@ for (int i = 0; i < n_per_t; ++i) {
   state[i] = static_cast<float>(i_state[s_idx]);
 }
 
-// g: [B, T, Hv] (scalar gating)
-auto g_ = g + b_idx * T * Hv;
-auto beta_ = beta + b_idx * T * Hv;
+// Per-head constants for gate computation
+float a_log_val = static_cast<float>(a_log[hv_idx]);
+float dt_bias_val = static_cast<float>(dt_bias[hv_idx]);
+
+// a, b: [B, T, Hv]
+auto a_ = a + b_idx * T * Hv;
+auto b_ = b + b_idx * T * Hv;
 
 for (int t = 0; t < T; ++t) {
+  // Compute g = exp(-exp(a_log) * softplus(a + dt_bias))
+  float x = static_cast<float>(a_[hv_idx]) + dt_bias_val;
+  float sp = fmax(x, 0.0f) + log1p(exp(-fabs(x)));
+  float g_val = exp(-exp(a_log_val) * sp);
+
+  // beta = sigmoid(b)
+  float beta_val = 1.0f / (1.0f + exp(-static_cast<float>(b_[hv_idx])));
+
   {
     float kv_mem = 0.0f;
     for (int i = 0; i < n_per_t; ++i) {
       auto s_idx = n_per_t * dk_idx + i;
-      state[i] = state[i] * g_[hv_idx];
+      state[i] = state[i] * g_val;
       kv_mem += state[i] * k_[s_idx];
     }
     kv_mem = simd_sum(kv_mem);
 
-    auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+    auto delta = (v_[dv_idx] - kv_mem) * beta_val;
 
     float out = 0.0f;
     for (int i = 0; i < n_per_t; ++i) {
@@ -421,8 +438,8 @@ for (int t = 0; t < T; ++t) {
   k_ += Hk * Dk;
   v_ += Hv * Dv;
   y += Hv * Dv;
-  g_ += Hv;
-  beta_ += Hv;
+  a_ += Hv;
+  b_ += Hv;
 }
 for (int i = 0; i < n_per_t; ++i) {
   auto s_idx = n_per_t * dk_idx + i;
@@ -433,8 +450,8 @@ for (int i = 0; i < n_per_t; ++i) {
 /// Create the `mlx_fast_metal_kernel` object from kernel source and names.
 #[allow(unsafe_code)]
 fn create_gated_delta_kernel() -> mlx_sys::mlx_fast_metal_kernel {
-    let input_names: [&std::ffi::CStr; 7] =
-        [c"q", c"k", c"v", c"g", c"beta", c"state_in", c"T"];
+    let input_names: [&std::ffi::CStr; 9] =
+        [c"q", c"k", c"v", c"a_log", c"a", c"dt_bias", c"b", c"state_in", c"T"];
     let output_names: [&std::ffi::CStr; 2] = [c"y", c"state_out"];
 
     let input_ptrs: Vec<*const c_char> =
@@ -516,20 +533,16 @@ fn configure_gated_delta_kernel(
     }
 }
 
-/// Invoke the fused `GatedDeltaNet` Metal kernel via `mlx_fast_metal_kernel` FFI.
-///
-/// q, k: `[B, T, Hk, Dk]` (kernel handles GQA internally)
-/// v: `[B, T, Hv, Dv]`, g: `[B, T, Hv]`, beta: `[B, T, Hv]`
-/// `state_in`: `[B, Hv, Dv, Dk]`
-///
-/// Returns `(y [B, T, Hv, Dv], state_out [B, Hv, Dv, Dk])`.
+/// Fused `GatedDeltaNet` kernel: computes g, beta, AND the full recurrence in one dispatch.
 #[allow(unsafe_code, clippy::too_many_arguments)]
 fn gated_delta_kernel_ffi(
     q: &Array,
     k: &Array,
     v: &Array,
-    gate: &Array,
-    beta: &Array,
+    a_log: &Array,
+    a: &Array,
+    dt_bias: &Array,
+    b: &Array,
     state_in: &Array,
     batch: i32,
     seq_len: i32,
@@ -552,8 +565,8 @@ fn gated_delta_kernel_ffi(
 
     let t_scalar = unsafe { mlx_sys::mlx_array_new_int(seq_len) };
     let input_ptrs = [
-        q.as_ptr(), k.as_ptr(), v.as_ptr(), gate.as_ptr(),
-        beta.as_ptr(), state_in.as_ptr(), t_scalar,
+        q.as_ptr(), k.as_ptr(), v.as_ptr(), a_log.as_ptr(),
+        a.as_ptr(), dt_bias.as_ptr(), b.as_ptr(), state_in.as_ptr(), t_scalar,
     ];
     let inputs_vec =
         unsafe { mlx_sys::mlx_vector_array_new_data(input_ptrs.as_ptr(), input_ptrs.len()) };
@@ -973,9 +986,8 @@ struct GatedDeltaNet {
     key_dim: i32,
     conv_dim: i32,
     conv_kernel_size: i32,
-    qk_norm_weight: Array,
-    inv_scale_sq: Array,
-    inv_scale: Array,
+    qk_norm_weight_q: Array,
+    qk_norm_weight_k: Array,
 }
 
 impl GatedDeltaNet {
@@ -1010,12 +1022,26 @@ impl GatedDeltaNet {
             key_dim,
             conv_dim,
             conv_kernel_size,
-            qk_norm_weight: Array::ones::<f32>(&[head_k_dim])?,
-            inv_scale_sq: {
-                let s = (head_k_dim as f32).sqrt().recip();
-                Array::from_f32(s * s)
+            qk_norm_weight_q: {
+                let dim_f32 = f32::from(
+                    i16::try_from(head_k_dim)
+                        .map_err(|_| Exception::custom("head_k_dim out of i16 range"))?,
+                );
+                let s = dim_f32.sqrt().recip();
+                let w = Array::ones::<f32>(&[head_k_dim])?.multiply(Array::from_f32(s * s))?;
+                w.eval()?;
+                w
             },
-            inv_scale: Array::from_f32((head_k_dim as f32).sqrt().recip()),
+            qk_norm_weight_k: {
+                let dim_f32 = f32::from(
+                    i16::try_from(head_k_dim)
+                        .map_err(|_| Exception::custom("head_k_dim out of i16 range"))?,
+                );
+                let s = dim_f32.sqrt().recip();
+                let w = Array::ones::<f32>(&[head_k_dim])?.multiply(Array::from_f32(s))?;
+                w.eval()?;
+                w
+            },
         })
     }
 
@@ -1068,8 +1094,7 @@ impl GatedDeltaNet {
         let keep_start = conv_input_len - n_keep;
         cache.conv_state = Some(conv_input.index((.., keep_start.., ..)));
 
-        // Apply conv1d + silu
-        let conv_out = nn::silu(self.conv1d.forward(&conv_input)?)?;
+        let conv_out = silu_direct(&self.conv1d.forward(&conv_input)?)?;
 
         // Split conv output back to q, k, v
         let split_indices = &[self.key_dim, self.key_dim * 2];
@@ -1087,24 +1112,15 @@ impl GatedDeltaNet {
             .ok_or_else(|| Exception::custom("conv split failed"))?
             .reshape(&[B, S, self.num_v_heads, self.head_v_dim])?;
 
-        // On first call, convert constant scalars to match input dtype.
-        // Avoids 3 as_dtype graph nodes per layer per step.
+        // On first call, convert weight vectors to match input dtype.
         let in_dt = inputs.dtype();
-        if self.qk_norm_weight.dtype() != in_dt {
-            self.qk_norm_weight = self.qk_norm_weight.as_dtype(in_dt)?;
-            self.inv_scale_sq = self.inv_scale_sq.as_dtype(in_dt)?;
-            self.inv_scale = self.inv_scale.as_dtype(in_dt)?;
+        if self.qk_norm_weight_q.dtype() != in_dt {
+            self.qk_norm_weight_q = self.qk_norm_weight_q.as_dtype(in_dt)?;
+            self.qk_norm_weight_k = self.qk_norm_weight_k.as_dtype(in_dt)?;
         }
 
-        let norm_q = fast::rms_norm(&conv_q, &self.qk_norm_weight, 1e-6)?
-            .multiply(&self.inv_scale_sq)?;
-        let norm_k = fast::rms_norm(&conv_k, &self.qk_norm_weight, 1e-6)?
-            .multiply(&self.inv_scale)?;
-
-        let g = compute_g_compiled((&*self.A_log, &a, &*self.dt_bias))?;
-
-        // beta = sigmoid(b)
-        let beta = nn::sigmoid(&b)?;
+        let norm_q = fast::rms_norm(&conv_q, &self.qk_norm_weight_q, 1e-6)?;
+        let norm_k = fast::rms_norm(&conv_k, &self.qk_norm_weight_k, 1e-6)?;
 
         // Get or initialize SSM state: [B, Hv, Dv, Dk]
         let state = match cache.ssm_state.take() {
@@ -1115,10 +1131,11 @@ impl GatedDeltaNet {
             )?,
         };
 
-        // Fused Metal kernel: processes all timesteps in one GPU dispatch.
-        // Handles GQA (Hk -> Hv mapping) internally, no repeat_axis needed.
+        // Fused kernel: computes g, beta, AND runs the full recurrence in one dispatch.
         let (y, new_state) = gated_delta_kernel_ffi(
-            &norm_q, &norm_k, &conv_v, &g, &beta, &state,
+            &norm_q, &norm_k, &conv_v,
+            &self.A_log, &a, &self.dt_bias, &b,
+            &state,
             B, S, self.num_k_heads, self.head_k_dim,
             self.num_v_heads, self.head_v_dim,
         )?;
@@ -1189,9 +1206,9 @@ impl GatedDeltaNet {
     }
 }
 
-/// Compiled gate computation: `g = exp(-exp(A_log) * softplus(a + dt_bias))`.
-///
-/// Fuses multiple element-wise operations into fewer GPU kernel launches.
+/// Reference implementation of gate computation (used by tests).
+/// Production code uses `compute_g_beta_kernel_ffi` instead.
+#[cfg(test)]
 fn compute_g_compiled((a_log, a, dt_bias): (&Array, &Array, &Array)) -> Result<Array, Exception> {
     let a_plus_bias = a.add(dt_bias)?;
     let sp = nn::softplus(&a_plus_bias)?;
@@ -1587,12 +1604,14 @@ mod tests {
         let q = Array::ones::<f32>(&[1, 1, 2, 32]).unwrap();
         let k = Array::ones::<f32>(&[1, 1, 2, 32]).unwrap();
         let v = Array::ones::<f32>(&[1, 1, 4, 32]).unwrap();
-        let g = Array::ones::<f32>(&[1, 1, 4]).unwrap();
-        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 1, 4]).unwrap();
+        let a_log = Array::zeros::<f32>(&[4]).unwrap();
+        let a = Array::ones::<f32>(&[1, 1, 4]).unwrap();
+        let dt_bias = Array::zeros::<f32>(&[4]).unwrap();
+        let b = Array::zeros::<f32>(&[1, 1, 4]).unwrap();
         let state = Array::zeros::<f32>(&[1, 4, 32, 32]).unwrap();
 
         let (y, new_state) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state,
+            &q, &k, &v, &a_log, &a, &dt_bias, &b, &state,
             1, 1, 2, 32, 4, 32,
         )
         .unwrap();
@@ -1971,12 +1990,14 @@ mod tests {
         let q = Array::ones::<f32>(&[1, 4, 2, 32]).unwrap();
         let k = Array::ones::<f32>(&[1, 4, 2, 32]).unwrap();
         let v = Array::ones::<f32>(&[1, 4, 4, 32]).unwrap();
-        let g = Array::ones::<f32>(&[1, 4, 4]).unwrap();
-        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 4, 4]).unwrap();
+        let a_log = Array::zeros::<f32>(&[4]).unwrap();
+        let a = Array::ones::<f32>(&[1, 4, 4]).unwrap();
+        let dt_bias = Array::zeros::<f32>(&[4]).unwrap();
+        let b = Array::zeros::<f32>(&[1, 4, 4]).unwrap();
         let state = Array::zeros::<f32>(&[1, 4, 32, 32]).unwrap();
 
         let (y, new_state) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state,
+            &q, &k, &v, &a_log, &a, &dt_bias, &b, &state,
             1, 4, 2, 32, 4, 32,
         )
         .unwrap();
@@ -2306,13 +2327,15 @@ mod tests {
         let q = Array::ones::<f32>(&[1, 1, 2, 32]).unwrap();
         let k = Array::ones::<f32>(&[1, 1, 2, 32]).unwrap();
         let v = Array::ones::<f32>(&[1, 1, 4, 32]).unwrap();
-        let g = ops::broadcast_to(Array::from_f32(0.9), &[1, 1, 4]).unwrap();
-        let beta = ops::broadcast_to(Array::from_f32(0.5), &[1, 1, 4]).unwrap();
+        let a_log = Array::zeros::<f32>(&[4]).unwrap();
+        let a = Array::ones::<f32>(&[1, 1, 4]).unwrap();
+        let dt_bias = Array::zeros::<f32>(&[4]).unwrap();
+        let b = Array::zeros::<f32>(&[1, 1, 4]).unwrap();
         let state0 = Array::zeros::<f32>(&[1, 4, 32, 32]).unwrap();
 
         // Step 1
         let (_, state1) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state0,
+            &q, &k, &v, &a_log, &a, &dt_bias, &b, &state0,
             1, 1, 2, 32, 4, 32,
         )
         .unwrap();
@@ -2320,7 +2343,7 @@ mod tests {
 
         // Step 2 (uses state1)
         let (y2, state2) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state1,
+            &q, &k, &v, &a_log, &a, &dt_bias, &b, &state1,
             1, 1, 2, 32, 4, 32,
         )
         .unwrap();
@@ -2399,16 +2422,20 @@ mod tests {
             .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
         let v = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv, dv], None)
             .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
-        let g = mlx_rs::random::uniform::<f32, f32>(0.8, 1.0, &[batch, seq_len, hv], None)
+        let a_log = mlx_rs::random::uniform::<f32, f32>(-1.0, 0.0, &[hv], None)
             .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
-        let beta = mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[batch, seq_len, hv], None)
+        let a = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv], None)
+            .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
+        let dt_bias = mlx_rs::random::uniform::<f32, f32>(-0.5, 0.5, &[hv], None)
+            .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
+        let b = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv], None)
             .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
         let state = mlx_rs::random::uniform::<f32, f32>(-0.1, 0.1, &[batch, hv, dv, dk], None)
             .unwrap().as_dtype(Dtype::Bfloat16).unwrap();
 
         // Kernel
         let (kern_y, kern_state) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state,
+            &q, &k, &v, &a_log, &a, &dt_bias, &b, &state,
             batch, seq_len, hk, dk, hv, dv,
         )
         .unwrap();
@@ -2441,9 +2468,16 @@ mod tests {
         let q = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hk, dk], None).unwrap();
         let k = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hk, dk], None).unwrap();
         let v = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv, dv], None).unwrap();
-        let g = mlx_rs::random::uniform::<f32, f32>(0.8, 1.0, &[batch, seq_len, hv], None).unwrap();
-        let beta = mlx_rs::random::uniform::<f32, f32>(0.0, 1.0, &[batch, seq_len, hv], None).unwrap();
+        let a_log = mlx_rs::random::uniform::<f32, f32>(-1.0, 0.0, &[hv], None).unwrap();
+        let a_val = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv], None).unwrap();
+        let dt_bias = mlx_rs::random::uniform::<f32, f32>(-0.5, 0.5, &[hv], None).unwrap();
+        let b = mlx_rs::random::uniform::<f32, f32>(-1.0, 1.0, &[batch, seq_len, hv], None).unwrap();
         let state = mlx_rs::random::uniform::<f32, f32>(-0.1, 0.1, &[batch, hv, dv, dk], None).unwrap();
+
+        // Compute g and beta from raw inputs for the reference path
+        let mut compute_g_fn = mlx_rs::transforms::compile::compile(compute_g_compiled, None);
+        let g = compute_g_fn((&a_log, &a_val, &dt_bias)).unwrap();
+        let beta = nn::sigmoid(&b).unwrap();
 
         // Reference: loop over timesteps with repeat_axis for GQA
         let repeat_factor = hv / hk;
@@ -2474,7 +2508,7 @@ mod tests {
 
         // Kernel
         let (kern_y, kern_state) = gated_delta_kernel_ffi(
-            &q, &k, &v, &g, &beta, &state,
+            &q, &k, &v, &a_log, &a_val, &dt_bias, &b, &state,
             batch, seq_len, hk, dk, hv, dv,
         )
         .unwrap();
@@ -3556,13 +3590,9 @@ mod tests {
             let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap()
                 .multiply(&inv_scale).unwrap();
 
-            // compute_g
-            let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-            let beta = nn::sigmoid(&b).unwrap();
-
-            // Metal kernel
+            // Metal kernel (computes g and beta internally)
             let (y, new_state) = gated_delta_kernel_ffi(
-                &norm_q, &norm_k, &conv_v, &g, &beta, state,
+                &norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, state,
                 1, 1, hk, dk, hv, dv,
             ).unwrap();
 
@@ -3804,11 +3834,8 @@ mod tests {
                     let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                     let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
 
-                    let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                    let beta = nn::sigmoid(&b).unwrap();
-
                     let (y, new_state) = gated_delta_kernel_ffi(
-                        &norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx],
+                        &norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx],
                         1, 1, hk, dk, hv, dv,
                     ).unwrap();
                     ss[gdn_idx] = new_state;
@@ -3938,9 +3965,7 @@ mod tests {
                 let conv_v = conv_out.index((.., .., 2*key_dim..)).reshape(&[1, 1, hv, dv]).unwrap();
                 let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                 let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
-                let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                let beta = nn::sigmoid(&b).unwrap();
-                let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
+                let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
                 ss[gdn_idx] = new_state;
                 gdn_idx += 1;
                 let normed_y = fast::rms_norm(&y, &l.norm_w, 1e-6).unwrap();
@@ -4251,9 +4276,7 @@ mod tests {
                     let conv_v = conv_out.index((.., .., 2*key_dim..)).reshape(&[1, 1, hv, dv]).unwrap();
                     let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                     let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
-                    let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                    let beta = nn::sigmoid(&b).unwrap();
-                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
+                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
                     ss[gdn_idx] = new_state;
                     gdn_idx += 1;
                     let normed_y = fast::rms_norm(&y, &l.norm_w, 1e-6).unwrap();
@@ -4347,9 +4370,7 @@ mod tests {
                     let conv_v = conv_out.index((.., .., 2*key_dim..)).reshape(&[1, 1, hv, dv]).unwrap();
                     let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                     let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
-                    let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                    let beta = nn::sigmoid(&b).unwrap();
-                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
+                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
                     ss[gdn_idx] = new_state;
                     gdn_idx += 1;
                     let normed_y = fast::rms_norm(&y, &l.norm_w, 1e-6).unwrap();
@@ -4444,9 +4465,7 @@ mod tests {
                     let conv_v = conv_out.index((.., .., 2*key_dim..)).reshape(&[1, 1, hv, dv]).unwrap();
                     let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                     let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
-                    let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                    let beta = nn::sigmoid(&b).unwrap();
-                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
+                    let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
 
                     // Targeted eval: resolve kernel outputs to break graph
                     mlx_rs::transforms::eval([&y, &new_state, &cs[gdn_idx]]).unwrap();
@@ -4649,9 +4668,7 @@ mod tests {
                         let conv_v = conv_out.index((.., .., 2*key_dim..)).reshape(&[1, 1, hv, dv]).unwrap();
                         let norm_q = fast::rms_norm(&conv_q, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale_sq).unwrap();
                         let norm_k = fast::rms_norm(&conv_k, &qk_norm_w, 1e-6).unwrap().multiply(&inv_scale).unwrap();
-                        let g = compute_g_compiled((&l.a_log, &a, &l.dt_bias)).unwrap();
-                        let beta = nn::sigmoid(&b).unwrap();
-                        let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &g, &beta, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
+                        let (y, new_state) = gated_delta_kernel_ffi(&norm_q, &norm_k, &conv_v, &l.a_log, &a, &l.dt_bias, &b, &ss[gdn_idx], 1, 1, hk, dk, hv, dv).unwrap();
                         ss[gdn_idx] = new_state;
                         gdn_idx += 1;
                         let normed_y = fast::rms_norm(&y, &l.norm_w, 1e-6).unwrap();
@@ -5659,10 +5676,12 @@ mod tests {
         let q = Array::from_slice(&vec![0.1f32; (b * hk * dk) as usize], &[b, 1, hk, dk]);
         let k = Array::from_slice(&vec![0.1f32; (b * hk * dk) as usize], &[b, 1, hk, dk]);
         let v = Array::from_slice(&vec![0.1f32; (b * hv * dv) as usize], &[b, 1, hv, dv]);
-        let g = Array::from_slice(&vec![0.9f32; (b * hv) as usize], &[b, 1, hv]);
-        let beta_arr = Array::from_slice(&vec![0.5f32; (b * hv) as usize], &[b, 1, hv]);
+        let a_log_arr = Array::zeros::<f32>(&[hv]).unwrap();
+        let a_arr = Array::from_slice(&vec![1.0f32; (b * hv) as usize], &[b, 1, hv]);
+        let dt_bias_arr = Array::zeros::<f32>(&[hv]).unwrap();
+        let b_arr = Array::zeros::<f32>(&[b, 1, hv]).unwrap();
         let state = Array::zeros::<f32>(&[b, hv, dv, dk]).unwrap();
-        mlx_rs::transforms::eval([&q, &k, &v, &g, &beta_arr, &state]).unwrap();
+        mlx_rs::transforms::eval([&q, &k, &v, &a_log_arr, &a_arr, &dt_bias_arr, &b_arr, &state]).unwrap();
 
         let indices = Array::from_slice(&[0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9], &[1, 1, top_k]);
 
@@ -5700,7 +5719,7 @@ mod tests {
             for i in 0..n_layers as usize {
                 if gdn_idx < n_gdn as usize && (i + 1) % 4 != 0 {
                     let (y, s_out) = gated_delta_kernel_ffi(
-                        &q, &k, &v, &g, &beta_arr, &state, b, 1, hk, dk, hv, dv,
+                        &q, &k, &v, &a_log_arr, &a_arr, &dt_bias_arr, &b_arr, &state, b, 1, hk, dk, hv, dv,
                     ).unwrap();
                     let y_flat = y.reshape(&[b, 1, -1]).unwrap();
                     let y_trunc = y_flat.index((.., .., ..d));
