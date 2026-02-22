@@ -28,6 +28,14 @@ pub fn resolve(path: &str) -> Result<PathBuf, String> {
     resolve_with_cache(path, default_hf_cache().as_deref())
 }
 
+/// Returns `true` if `s` looks like a `org/name` HuggingFace model ID.
+pub fn is_hf_model_id(s: &str) -> bool {
+    if s.starts_with("~/") || s.starts_with('/') {
+        return false;
+    }
+    matches!(s.split_once('/'), Some((org, name)) if !org.is_empty() && !name.is_empty() && !name.contains('/'))
+}
+
 /// Testable resolver with explicit cache root.
 fn resolve_with_cache(path: &str, cache_root: Option<&Path>) -> Result<PathBuf, String> {
     let as_path = Path::new(path);
@@ -235,6 +243,44 @@ mod tests {
     fn test_hf_cache_from_env_whitespace_only_ignored() {
         let result = hf_cache_from_env(Some("  "), None, None);
         assert!(result.is_none());
+    }
+
+    // --- is_hf_model_id tests ---
+
+    #[test]
+    fn test_is_hf_model_id_valid() {
+        assert!(is_hf_model_id("org/model"));
+        assert!(is_hf_model_id("mlx-community/Qwen3-4bit"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_tilde_path_is_false() {
+        assert!(!is_hf_model_id("~/models/foo"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_absolute_path_is_false() {
+        assert!(!is_hf_model_id("/some/absolute/path"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_nested_slash_is_false() {
+        assert!(!is_hf_model_id("org/name/extra"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_no_slash_is_false() {
+        assert!(!is_hf_model_id("justname"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_empty_org_is_false() {
+        assert!(!is_hf_model_id("/model"));
+    }
+
+    #[test]
+    fn test_is_hf_model_id_empty_name_is_false() {
+        assert!(!is_hf_model_id("org/"));
     }
 
     // --- tilde expansion error message test ---

@@ -1,6 +1,7 @@
 pub mod anthropic_adapter;
 pub mod config;
 pub mod error;
+pub mod model_download;
 pub mod model_resolver;
 pub mod routes;
 pub mod state;

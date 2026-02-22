@@ -1,10 +1,11 @@
 use std::collections::HashMap;
+use std::io::IsTerminal;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 use mlx_engine::simple::SimpleEngine;
 
-use mlx_server::{build_router, config::ServerConfig, model_resolver, state::AppState};
+use mlx_server::{build_router, config::ServerConfig, model_download, model_resolver, state::AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -20,7 +21,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut engines = HashMap::new();
     for model_path in &config.models {
         tracing::info!(model = %model_path, "Resolving model path");
-        let resolved = model_resolver::resolve(model_path)?;
+        let resolved = match model_resolver::resolve(model_path) {
+            Ok(path) => path,
+            Err(_) if model_resolver::is_hf_model_id(model_path) => {
+                let is_interactive = std::io::stdin().is_terminal();
+                model_download::offer_download(
+                    model_path,
+                    is_interactive,
+                    &mut std::io::stderr().lock(),
+                    std::io::stdin().lock(),
+                    || {
+                        let status = std::process::Command::new("huggingface-cli")
+                            .args(["download", model_path])
+                            .status()
+                            .map_err(|e| format!("failed to run huggingface-cli: {e}\nInstall with: brew install huggingface-cli"))?;
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            Err(format!("huggingface-cli download failed for '{model_path}'"))
+                        }
+                    },
+                )?;
+                model_resolver::resolve(model_path)?
+            }
+            Err(err) => return Err(err.into()),
+        };
         tracing::info!(model = %model_path, resolved = %resolved.display(), "Loading model");
         let engine = SimpleEngine::load(&resolved)?;
         let name = engine.model_name().to_owned();

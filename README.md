@@ -20,7 +20,7 @@ brew tap panbanda/mlx-server
 brew install mlx-server
 ```
 
-**Build from source** (requires Rust 1.85.0+ and Xcode Command Line Tools):
+**Build from source** (requires Rust 1.85.0+, Xcode Command Line Tools, and `huggingface-cli`):
 
 ```bash
 cargo build --release
@@ -39,7 +39,15 @@ mlx-server --model ~/dev/models/My-Custom-Model
 mlx-server --model mlx-community/Llama-3.1-8B-Instruct-4bit --model mlx-community/Qwen3-Coder-Next-4bit
 ```
 
-The `--model` flag accepts HuggingFace model IDs (`org/name`) or local directory paths. HuggingFace IDs are resolved from the local cache at `~/.cache/huggingface/hub/` (or `$HF_HUB_CACHE` if set, else `$HF_HOME/hub`). Download models first with `huggingface-cli download`.
+The `--model` flag accepts HuggingFace model IDs (`org/name`) or local directory paths. HuggingFace IDs are resolved from the local cache at `~/.cache/huggingface/hub/` (or `$HF_HUB_CACHE` if set, else `$HF_HOME/hub`).
+
+If a model ID is not found in the cache and stdin is a terminal, the server will prompt to download it:
+
+```
+Model 'mlx-community/Llama-3.1-8B-Instruct-4bit' not found in HuggingFace cache. Download now? [y/N]
+```
+
+In non-interactive mode (piped or scripted), startup fails immediately with a hint to run `huggingface-cli download org/name` manually.
 
 Models must be in **MLX safetensors format**. Pre-quantized weights are available from [mlx-community](https://huggingface.co/mlx-community) on HuggingFace. To convert your own:
 
