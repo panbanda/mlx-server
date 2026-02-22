@@ -47,6 +47,8 @@ where
 mod tests {
     use super::*;
 
+    // Needs to return Result<(), String> to satisfy F: FnOnce() -> Result<(), String>.
+    #[allow(clippy::unnecessary_wraps)]
     fn ok_download() -> Result<(), String> {
         Ok(())
     }
@@ -58,7 +60,7 @@ mod tests {
     #[test]
     fn non_interactive_returns_error_with_hint() {
         let mut out = Vec::new();
-        let result = offer_download("org/model", false, &mut out, "".as_bytes(), ok_download);
+        let result = offer_download("org/model", false, &mut out, b"".as_slice(), ok_download);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("org/model"));
@@ -68,21 +70,21 @@ mod tests {
     #[test]
     fn non_interactive_writes_no_prompt() {
         let mut out = Vec::new();
-        let _ = offer_download("org/model", false, &mut out, "".as_bytes(), ok_download);
+        let _ = offer_download("org/model", false, &mut out, b"".as_slice(), ok_download);
         assert!(out.is_empty());
     }
 
     #[test]
     fn user_confirms_lowercase_succeeds() {
         let mut out = Vec::new();
-        let result = offer_download("org/model", true, &mut out, "y\n".as_bytes(), ok_download);
+        let result = offer_download("org/model", true, &mut out, b"y\n".as_slice(), ok_download);
         assert!(result.is_ok());
     }
 
     #[test]
     fn user_confirms_uppercase_succeeds() {
         let mut out = Vec::new();
-        let result = offer_download("org/model", true, &mut out, "Y\n".as_bytes(), ok_download);
+        let result = offer_download("org/model", true, &mut out, b"Y\n".as_slice(), ok_download);
         assert!(result.is_ok());
     }
 
@@ -90,7 +92,7 @@ mod tests {
     fn user_declines_does_not_call_download() {
         let mut out = Vec::new();
         let mut called = false;
-        let result = offer_download("org/model", true, &mut out, "n\n".as_bytes(), || {
+        let result = offer_download("org/model", true, &mut out, b"n\n".as_slice(), || {
             called = true;
             Ok(())
         });
@@ -101,7 +103,7 @@ mod tests {
     #[test]
     fn empty_input_treated_as_no() {
         let mut out = Vec::new();
-        let result = offer_download("org/model", true, &mut out, "\n".as_bytes(), ok_download);
+        let result = offer_download("org/model", true, &mut out, b"\n".as_slice(), ok_download);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("not downloaded"));
@@ -110,7 +112,7 @@ mod tests {
     #[test]
     fn download_failure_propagates() {
         let mut out = Vec::new();
-        let result = offer_download("org/model", true, &mut out, "y\n".as_bytes(), err_download);
+        let result = offer_download("org/model", true, &mut out, b"y\n".as_slice(), err_download);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("download failed"));
     }
@@ -122,7 +124,7 @@ mod tests {
             "myorg/mymodel",
             true,
             &mut out,
-            "n\n".as_bytes(),
+            b"n\n".as_slice(),
             ok_download,
         );
         let prompt = String::from_utf8(out).unwrap();
@@ -132,7 +134,13 @@ mod tests {
     #[test]
     fn non_interactive_error_contains_exact_command() {
         let mut out = Vec::new();
-        let result = offer_download("myorg/mymodel", false, &mut out, "".as_bytes(), ok_download);
+        let result = offer_download(
+            "myorg/mymodel",
+            false,
+            &mut out,
+            b"".as_slice(),
+            ok_download,
+        );
         let err = result.unwrap_err();
         assert!(err.contains("huggingface-cli download myorg/mymodel"));
     }
