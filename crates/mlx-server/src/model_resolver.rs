@@ -28,7 +28,7 @@ pub fn resolve(path: &str) -> Result<PathBuf, String> {
     resolve_with_cache(path, default_hf_cache().as_deref())
 }
 
-/// Returns `true` if `s` looks like a `org/name` HuggingFace model ID.
+/// Returns `true` if `s` looks like a `org/name` `HuggingFace` model ID.
 pub fn is_hf_model_id(s: &str) -> bool {
     if s.starts_with("~/") || s.starts_with('/') {
         return false;
