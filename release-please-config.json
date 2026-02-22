@@ -4,6 +4,13 @@
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": true,
   "include-v-in-tag": true,
+  "plugins": [
+    {
+      "type": "linked-versions",
+      "groupName": "workspace",
+      "components": ["mlx-models", "mlx-engine", "mlx-server"]
+    }
+  ],
   "packages": {
     "crates/mlx-models": {
       "component": "mlx-models"
