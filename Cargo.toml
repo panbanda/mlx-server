@@ -118,8 +118,8 @@ uuid = { version = "1", features = ["v4"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 [patch.crates-io]
-mlx-rs = { git = "https://github.com/panbanda/mlx-rs.git", rev = "801b114e" }
-mlx-sys = { git = "https://github.com/panbanda/mlx-rs.git", rev = "801b114e" }
+mlx-rs = { git = "https://github.com/oxideai/mlx-rs.git", rev = "af21d79" }
+mlx-sys = { git = "https://github.com/oxideai/mlx-rs.git", rev = "af21d79" }
 
 [profile.release]
 lto = "thin"
