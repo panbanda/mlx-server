@@ -63,6 +63,7 @@ impl ChatTemplateRenderer {
                         return Self::new(template);
                     }
                 }
+                tracing::warn!("chat_template field present but not a string or valid array");
             }
         }
 
@@ -356,6 +357,38 @@ TOOLS:{{ tools | length }}
         let reparsed: String = serde_json::from_str(&result).unwrap();
         assert!(reparsed.contains("quotes: \"hello\""));
         assert!(reparsed.contains("backslash: \\"));
+    }
+
+    #[test]
+    fn test_from_model_dir_array_of_templates_uses_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": [
+                {"name": "rag", "template": "RAG:{{ messages[0].content }}"},
+                {"name": "default", "template": "DEFAULT:{{ messages[0].content }}"}
+            ]}"#,
+        )
+        .unwrap();
+        let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
+        let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
+        assert!(result.starts_with("DEFAULT:"), "Expected default template, got: {result}");
+    }
+
+    #[test]
+    fn test_from_model_dir_array_of_templates_falls_back_to_first() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": [
+                {"name": "rag", "template": "RAG:{{ messages[0].content }}"},
+                {"name": "tool_use", "template": "TOOL:{{ messages[0].content }}"}
+            ]}"#,
+        )
+        .unwrap();
+        let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
+        let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
+        assert!(result.starts_with("RAG:"), "Expected first template, got: {result}");
     }
 
     #[test]
