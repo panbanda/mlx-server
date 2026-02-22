@@ -114,6 +114,18 @@ curl http://localhost:8000/v1/models
 | Qwen3 | `qwen3` | Qwen3 |
 | Qwen3-Next | `qwen3_next` | Qwen3-Coder (hybrid SSM/attention + MoE) |
 
+## Performance
+
+Decode throughput vs Python `mlx_lm` on Apple Silicon (500 tokens, long-form prompt):
+
+| Architecture | Model | Rust tok/s | Python tok/s | Ratio |
+|---|---|---|---|---|
+| llama | Llama-3.2-1B-Instruct-4bit | 453.5 | 436.7 | 1.04x |
+| mistral | Mistral-7B-Instruct-v0.3-4bit | 103.7 | 102.8 | 1.01x |
+| qwen2 | Arch-Router-1.5B | 132.4 | 130.4 | 1.02x |
+| qwen3 | Qwen3-1.7B-4bit | 307.3 | 282.4 | 1.09x |
+| qwen3_next | Qwen3-Coder-Next-4bit | 75.1 | 86.6 | 0.87x |
+
 ## Development
 
 ```bash
