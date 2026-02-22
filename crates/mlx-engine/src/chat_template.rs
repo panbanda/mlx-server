@@ -372,7 +372,10 @@ TOOLS:{{ tools | length }}
         .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
         let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
-        assert!(result.starts_with("DEFAULT:"), "Expected default template, got: {result}");
+        assert!(
+            result.starts_with("DEFAULT:"),
+            "Expected default template, got: {result}"
+        );
     }
 
     #[test]
@@ -388,7 +391,21 @@ TOOLS:{{ tools | length }}
         .unwrap();
         let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
         let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
-        assert!(result.starts_with("RAG:"), "Expected first template, got: {result}");
+        assert!(
+            result.starts_with("RAG:"),
+            "Expected first template, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_from_model_dir_array_template_empty_array_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": []}"#,
+        )
+        .unwrap();
+        assert!(ChatTemplateRenderer::from_model_dir(dir.path()).is_err());
     }
 
     #[test]
