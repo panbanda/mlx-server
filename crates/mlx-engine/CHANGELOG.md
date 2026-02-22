@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.6](https://github.com/panbanda/mlx-server/compare/mlx-engine-v0.1.5...mlx-engine-v0.1.6) (2026-02-22)
+
+
+### Bug Fixes
+
+* qwen3 correctness (attention_bias, QK norm, RoPE bug) ([#23](https://github.com/panbanda/mlx-server/issues/23)) ([2831957](https://github.com/panbanda/mlx-server/commit/2831957f7cfcbda20d191d88a7fd52e1af1cf4a0))
+
 ## [0.1.5](https://github.com/panbanda/mlx-server/compare/mlx-engine-v0.1.4...mlx-engine-v0.1.5) (2026-02-22)
 
 
