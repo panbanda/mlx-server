@@ -25,7 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tracing::info!(model = %model_path, "Resolving model path");
         let resolved = match model_resolver::resolve(model_path) {
             Ok(path) => path,
-            Err(_) if model_resolver::is_hf_model_id(model_path) => {
+            Err(resolve_err) if model_resolver::is_hf_model_id(model_path) => {
+                tracing::debug!(error = %resolve_err, "model not in cache; attempting download");
                 let is_interactive = std::io::stdin().is_terminal();
                 model_download::offer_download(
                     model_path,

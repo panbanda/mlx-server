@@ -43,11 +43,9 @@ fn resolve_with_cache(path: &str, cache_root: Option<&Path>) -> Result<PathBuf, 
         return Ok(as_path.to_path_buf());
     }
 
-    if let Some((org, name)) = path.split_once('/') {
-        if !org.is_empty() && !name.is_empty() && !name.contains('/') {
-            if let Some(cache) = cache_root {
-                return resolve_hf_snapshot(cache, org, name);
-            }
+    if is_hf_model_id(path) {
+        if let (Some((org, name)), Some(cache)) = (path.split_once('/'), cache_root) {
+            return resolve_hf_snapshot(cache, org, name);
         }
     }
 
