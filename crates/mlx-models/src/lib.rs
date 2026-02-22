@@ -186,7 +186,6 @@ pub fn load_quantized_safetensors_weights<M: ModuleParametersExt>(
             if let Some(param) = params.get_mut(&*key) {
                 **param = value;
             } else if quantized {
-                // Remap: "a.b.weight" -> "a.b.inner.weight", "a.b.bias" -> "a.b.inner.bias"
                 if let Some(remapped) = remap_quantized_key(&key) {
                     if let Some(param) = params.get_mut(&*remapped) {
                         **param = value;

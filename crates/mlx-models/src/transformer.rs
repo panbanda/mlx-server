@@ -19,7 +19,7 @@ use serde::Deserialize;
 use crate::{
     cache::KeyValueCache,
     error::ModelError,
-    utils::{AttentionMask, create_attention_mask, scaled_dot_product_attention},
+    utils::{AttentionMask, apply_rope, create_attention_mask, scaled_dot_product_attention},
 };
 
 const fn default_rope_theta() -> f32 {
@@ -55,6 +55,8 @@ pub struct ModelArgs {
 
     // Architecture-specific optional fields
     #[serde(default)]
+    pub attention_bias: Option<bool>,
+    #[serde(default)]
     pub use_sliding_window: bool,
     #[serde(default)]
     pub sliding_window: Option<i32>,
@@ -69,9 +71,11 @@ pub struct ModelArgs {
 impl ModelArgs {
     /// Whether Q/K/V projections should have bias.
     ///
-    /// Qwen2/Qwen3 use bias; Llama and Mistral do not.
+    /// Uses the config's `attention_bias` field when present, otherwise falls
+    /// back to architecture defaults (only qwen2 uses bias by default).
     pub fn qkv_bias(&self) -> bool {
-        matches!(self.model_type.as_str(), "qwen2" | "qwen3")
+        self.attention_bias
+            .unwrap_or(matches!(self.model_type.as_str(), "qwen2"))
     }
 
     /// Head dimension, computed from `hidden_size / num_attention_heads`.
@@ -124,6 +128,10 @@ pub struct Attention {
     #[param]
     pub o_proj: MaybeQuantized<nn::Linear>,
     #[param]
+    pub q_norm: Option<nn::RmsNorm>,
+    #[param]
+    pub k_norm: Option<nn::RmsNorm>,
+    #[param]
     pub rope: nn::Rope,
 }
 
@@ -154,6 +162,22 @@ impl Attention {
             .bias(false)
             .build()?;
 
+        let qk_norm = matches!(args.model_type.as_str(), "qwen3");
+        let q_norm = qk_norm
+            .then(|| {
+                nn::RmsNormBuilder::new(head_dim)
+                    .eps(args.rms_norm_eps)
+                    .build()
+            })
+            .transpose()?;
+        let k_norm = qk_norm
+            .then(|| {
+                nn::RmsNormBuilder::new(head_dim)
+                    .eps(args.rms_norm_eps)
+                    .build()
+            })
+            .transpose()?;
+
         let rope = nn::RopeBuilder::new(head_dim)
             .traditional(false)
             .base(args.rope_theta)
@@ -169,6 +193,8 @@ impl Attention {
             k_proj: MaybeQuantized::Original(k_proj),
             v_proj: MaybeQuantized::Original(v_proj),
             o_proj: MaybeQuantized::Original(o_proj),
+            q_norm,
+            k_norm,
             rope,
         })
     }
@@ -204,32 +230,32 @@ where
         let k_raw = self.k_proj.forward(x)?;
         let v_raw = self.v_proj.forward(x)?;
 
-        let mut queries = q_raw
-            .reshape(&[B, L, self.n_heads, -1])?
-            .transpose_axes(&[0, 2, 1, 3])?;
-        let mut keys = k_raw
-            .reshape(&[B, L, self.n_kv_heads, -1])?
-            .transpose_axes(&[0, 2, 1, 3])?;
+        let mut queries = q_raw.reshape(&[B, L, self.n_heads, -1])?;
+        let mut keys = k_raw.reshape(&[B, L, self.n_kv_heads, -1])?;
+
+        if let Some(ref mut qn) = self.q_norm {
+            queries = qn.forward(&queries)?;
+        }
+        if let Some(ref mut kn) = self.k_norm {
+            keys = kn.forward(&keys)?;
+        }
+
+        queries = queries.transpose_axes(&[0, 2, 1, 3])?;
+        keys = keys.transpose_axes(&[0, 2, 1, 3])?;
         let mut values = v_raw
             .reshape(&[B, L, self.n_kv_heads, -1])?
             .transpose_axes(&[0, 2, 1, 3])?;
 
         if let Some(ref mut kv_cache) = cache {
-            let q_input = nn::RopeInputBuilder::new(&queries)
-                .offset(kv_cache.offset())
-                .build()?;
-            queries = self.rope.forward(q_input)?;
-            let k_input = nn::RopeInputBuilder::new(&keys)
-                .offset(kv_cache.offset())
-                .build()?;
-            keys = self.rope.forward(k_input)?;
+            queries = apply_rope(&queries, &self.rope, kv_cache.offset())?;
+            keys = apply_rope(&keys, &self.rope, kv_cache.offset())?;
 
             let (cached_keys, cached_values) = kv_cache.update_and_fetch(keys, values)?;
             keys = cached_keys;
             values = cached_values;
         } else {
-            queries = self.rope.forward(nn::RopeInput::new(&queries))?;
-            keys = self.rope.forward(nn::RopeInput::new(&keys))?;
+            queries = apply_rope(&queries, &self.rope, 0)?;
+            keys = apply_rope(&keys, &self.rope, 0)?;
         }
 
         let output = scaled_dot_product_attention(queries, keys, values, self.scale, mask)?
@@ -244,6 +270,12 @@ where
         self.k_proj.training_mode(mode);
         self.v_proj.training_mode(mode);
         self.o_proj.training_mode(mode);
+        if let Some(ref mut qn) = self.q_norm {
+            qn.training_mode(mode);
+        }
+        if let Some(ref mut kn) = self.k_norm {
+            kn.training_mode(mode);
+        }
         <nn::Rope as Module<nn::RopeInput>>::training_mode(&mut self.rope, mode);
     }
 }
@@ -605,6 +637,7 @@ mod tests {
             max_position_embeddings: 512,
             rope_theta: 10000.0,
             tie_word_embeddings: false,
+            attention_bias: None,
             use_sliding_window: false,
             sliding_window: None,
             rope_scaling: None,
@@ -763,8 +796,9 @@ mod tests {
 
     #[test]
     fn test_qkv_bias_for_qwen3() {
+        // qwen3 uses bias=false (unlike qwen2)
         let args = make_model_args("qwen3", 2048, 16, 2, 151_936, 28);
-        assert!(args.qkv_bias());
+        assert!(!args.qkv_bias());
     }
 
     #[test]
@@ -897,7 +931,7 @@ mod tests {
 
     #[test]
     fn test_load_model_args_valid_qwen3_config() {
-        assert_loaded_model_config("qwen3", true);
+        assert_loaded_model_config("qwen3", false);
     }
 
     #[test]
@@ -906,8 +940,43 @@ mod tests {
     }
 
     #[test]
+    fn test_qkv_bias_explicit_attention_bias_overrides_default() {
+        let mut args = make_model_args("llama", 256, 4, 2, 1000, 2);
+        // llama defaults to no bias, but explicit config overrides
+        args.attention_bias = Some(true);
+        assert!(args.qkv_bias());
+
+        let mut args2 = make_model_args("qwen2", 256, 4, 2, 1000, 2);
+        // qwen2 defaults to bias, but explicit config overrides
+        args2.attention_bias = Some(false);
+        assert!(!args2.qkv_bias());
+    }
+
+    #[test]
     fn test_qkv_bias_for_unsupported_types() {
         let args = make_model_args("custom_arch", 256, 4, 2, 1000, 2);
+        assert!(!args.qkv_bias());
+    }
+
+    #[test]
+    fn test_qwen3_config_deserialization_with_attention_bias() {
+        let json = r#"{
+            "model_type": "qwen3",
+            "hidden_size": 2048,
+            "num_hidden_layers": 36,
+            "intermediate_size": 11008,
+            "num_attention_heads": 16,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 151936,
+            "num_key_value_heads": 2,
+            "max_position_embeddings": 40960,
+            "rope_theta": 1000000.0,
+            "tie_word_embeddings": true,
+            "attention_bias": false
+        }"#;
+
+        let args: ModelArgs = serde_json::from_str(json).unwrap();
+        assert_eq!(args.attention_bias, Some(false));
         assert!(!args.qkv_bias());
     }
 

@@ -74,7 +74,7 @@ static GATED_DELTA_KERNEL: OnceLock<CachedMetalKernel> = OnceLock::new();
 use crate::{
     cache::{KeyValueCache, SteppingKeyValueCache},
     error::ModelError,
-    utils::scaled_dot_product_attention,
+    utils::{apply_rope, scaled_dot_product_attention},
 };
 
 // ---------------------------------------------------------------------------
@@ -752,10 +752,8 @@ impl Qwen3NextAttention {
 
         // RoPE with cache offset
         let offset = cache.offset();
-        let q_input = nn::RopeInputBuilder::new(&queries).offset(offset).build()?;
-        queries = self.rope.forward(q_input)?;
-        let k_input = nn::RopeInputBuilder::new(&keys).offset(offset).build()?;
-        keys = self.rope.forward(k_input)?;
+        queries = apply_rope(&queries, &self.rope, offset)?;
+        keys = apply_rope(&keys, &self.rope, offset)?;
 
         let (cached_keys, cached_values) = cache.update_and_fetch(keys, values)?;
         keys = cached_keys;

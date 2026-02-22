@@ -2,10 +2,28 @@ use mlx_rs::{
     Array, arange,
     error::Exception,
     fast::ScaledDotProductAttentionMask,
+    nn,
     ops::indexing::{IndexOp, NewAxis},
 };
 
 use crate::cache::KeyValueCache;
+
+/// Apply `RoPE` directly without the 3D reshape in `nn::Rope::forward`.
+///
+/// The mlx-rs `Rope` wrapper reshapes to 3D before calling `mlx_fast_rope`,
+/// which triggers a bug in MLX where batch elements beyond the first are
+/// zeroed when `seq_len=1`. Calling `mlx_fast_rope` on the original shape avoids this.
+pub(crate) fn apply_rope(x: &Array, rope: &nn::Rope, offset: i32) -> Result<Array, Exception> {
+    mlx_rs::fast::rope(
+        x,
+        rope.dimensions,
+        rope.traditional,
+        rope.base,
+        rope.scale,
+        offset,
+        None,
+    )
+}
 
 /// Attention mask variant.
 #[derive(Debug, Clone)]

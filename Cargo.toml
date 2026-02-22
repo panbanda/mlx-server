@@ -96,6 +96,7 @@ serde_json = "1"
 # Tokenization + Templates
 tokenizers = { version = "0.22", features = ["http"] }
 minijinja = { version = "2", features = ["loader"] }
+minijinja-contrib = { version = "2", features = ["pycompat"] }
 
 # CLI + Configuration
 clap = { version = "4", features = ["derive"] }

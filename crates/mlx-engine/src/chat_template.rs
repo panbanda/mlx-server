@@ -22,6 +22,8 @@ impl ChatTemplateRenderer {
     pub fn new<S: Into<String>>(template_source: S) -> Result<Self, EngineError> {
         let mut env = Environment::new();
         env.add_filter("tojson", tojson_filter);
+        minijinja_contrib::add_to_environment(&mut env);
+        env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         env.add_template_owned("chat".to_owned(), template_source.into())
             .map_err(|e| EngineError::Template(e.to_string()))?;
         Ok(Self { env })
@@ -44,8 +46,24 @@ impl ChatTemplateRenderer {
                 .map_err(|e| EngineError::Template(format!("Failed to read config: {e}")))?;
             let config: serde_json::Value = serde_json::from_str(&config_str)
                 .map_err(|e| EngineError::Template(format!("Invalid JSON: {e}")))?;
-            if let Some(template) = config.get("chat_template").and_then(|v| v.as_str()) {
-                return Self::new(template);
+            if let Some(ct) = config.get("chat_template") {
+                // String template
+                if let Some(template) = ct.as_str() {
+                    return Self::new(template);
+                }
+                // Array of {name, template} objects -- use "default" or first entry
+                if let Some(arr) = ct.as_array() {
+                    let found = arr
+                        .iter()
+                        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("default"))
+                        .or_else(|| arr.first())
+                        .and_then(|v| v.get("template"))
+                        .and_then(|v| v.as_str());
+                    if let Some(template) = found {
+                        return Self::new(template);
+                    }
+                }
+                tracing::warn!("chat_template field present but not a string or valid array");
             }
         }
 
@@ -339,6 +357,55 @@ TOOLS:{{ tools | length }}
         let reparsed: String = serde_json::from_str(&result).unwrap();
         assert!(reparsed.contains("quotes: \"hello\""));
         assert!(reparsed.contains("backslash: \\"));
+    }
+
+    #[test]
+    fn test_from_model_dir_array_of_templates_uses_default() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": [
+                {"name": "rag", "template": "RAG:{{ messages[0].content }}"},
+                {"name": "default", "template": "DEFAULT:{{ messages[0].content }}"}
+            ]}"#,
+        )
+        .unwrap();
+        let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
+        let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
+        assert!(
+            result.starts_with("DEFAULT:"),
+            "Expected default template, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_from_model_dir_array_of_templates_falls_back_to_first() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": [
+                {"name": "rag", "template": "RAG:{{ messages[0].content }}"},
+                {"name": "tool_use", "template": "TOOL:{{ messages[0].content }}"}
+            ]}"#,
+        )
+        .unwrap();
+        let renderer = ChatTemplateRenderer::from_model_dir(dir.path()).unwrap();
+        let result = renderer.apply(&[msg("user", "hi")], None, false).unwrap();
+        assert!(
+            result.starts_with("RAG:"),
+            "Expected first template, got: {result}"
+        );
+    }
+
+    #[test]
+    fn test_from_model_dir_array_template_empty_array_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": []}"#,
+        )
+        .unwrap();
+        assert!(ChatTemplateRenderer::from_model_dir(dir.path()).is_err());
     }
 
     #[test]
