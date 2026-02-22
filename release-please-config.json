@@ -8,10 +8,15 @@
     {
       "type": "linked-versions",
       "groupName": "workspace",
-      "components": ["mlx-models", "mlx-engine", "mlx-server"]
+      "components": ["workspace-root", "mlx-models", "mlx-engine", "mlx-server"]
     }
   ],
   "packages": {
+    ".": {
+      "release-type": "simple",
+      "component": "workspace-root",
+      "skip-github-release": true
+    },
     "crates/mlx-models": {
       "component": "mlx-models"
     },
