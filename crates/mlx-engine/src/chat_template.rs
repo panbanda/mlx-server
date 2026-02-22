@@ -22,6 +22,8 @@ impl ChatTemplateRenderer {
     pub fn new<S: Into<String>>(template_source: S) -> Result<Self, EngineError> {
         let mut env = Environment::new();
         env.add_filter("tojson", tojson_filter);
+        minijinja_contrib::add_to_environment(&mut env);
+        env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         env.add_template_owned("chat".to_owned(), template_source.into())
             .map_err(|e| EngineError::Template(e.to_string()))?;
         Ok(Self { env })
@@ -44,8 +46,23 @@ impl ChatTemplateRenderer {
                 .map_err(|e| EngineError::Template(format!("Failed to read config: {e}")))?;
             let config: serde_json::Value = serde_json::from_str(&config_str)
                 .map_err(|e| EngineError::Template(format!("Invalid JSON: {e}")))?;
-            if let Some(template) = config.get("chat_template").and_then(|v| v.as_str()) {
-                return Self::new(template);
+            if let Some(ct) = config.get("chat_template") {
+                // String template
+                if let Some(template) = ct.as_str() {
+                    return Self::new(template);
+                }
+                // Array of {name, template} objects -- use "default" or first entry
+                if let Some(arr) = ct.as_array() {
+                    let found = arr
+                        .iter()
+                        .find(|v| v.get("name").and_then(|n| n.as_str()) == Some("default"))
+                        .or_else(|| arr.first())
+                        .and_then(|v| v.get("template"))
+                        .and_then(|v| v.as_str());
+                    if let Some(template) = found {
+                        return Self::new(template);
+                    }
+                }
             }
         }
 
