@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/panbanda/mlx-server/compare/mlx-models-v0.1.3...mlx-models-v0.1.4) (2026-02-22)
+
+
+### Performance Improvements
+
+* fused GPU kernels + dtype fix for 4x speedup (18.6 -&gt; 75 tok/s) ([#18](https://github.com/panbanda/mlx-server/issues/18)) ([8ece387](https://github.com/panbanda/mlx-server/commit/8ece387a3d825972996ef8cb654dbbb3b75f75a3))
+* sort expert indices for gather_qmm coalescing (77 -&gt; 80 tok/s) ([#20](https://github.com/panbanda/mlx-server/issues/20)) ([3143fa9](https://github.com/panbanda/mlx-server/commit/3143fa9a3c06edee87162de2fae263e20f34c5b6))
+
 ## [0.1.3](https://github.com/panbanda/mlx-server/compare/mlx-models-v0.1.2...mlx-models-v0.1.3) (2026-02-20)
 
 

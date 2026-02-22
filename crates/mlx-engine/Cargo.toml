@@ -1,6 +1,6 @@
 [package]
 name = "mlx-engine"
-version = "0.1.4"
+version = "0.1.5"
 description = "Inference engine (tokenization, generation loop, prompt caching) for mlx-server"
 edition.workspace = true
 license.workspace = true
