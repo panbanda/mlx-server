@@ -272,12 +272,10 @@ impl QEmbedding {
 // SwiGLU activation
 // ---------------------------------------------------------------------------
 
-/// `silu(gate) * x` -- uses direct ops to avoid compiled silu FFI overhead.
 fn swiglu(gate: &Array, x: &Array) -> Result<Array, Exception> {
     gate.multiply(nn::sigmoid(gate)?)?.multiply(x)
 }
 
-/// Direct `SiLU`: `x * sigmoid(x)`, bypassing compiled silu per-call overhead.
 fn silu_direct(x: &Array) -> Result<Array, Exception> {
     x.multiply(nn::sigmoid(x)?)
 }
@@ -767,7 +765,6 @@ impl Qwen3NextAttention {
             .transpose_axes(&[0, 2, 1, 3])?
             .reshape(&[B, L, -1])?;
 
-        // Sigmoid gate on output
         let gated = output.multiply(nn::sigmoid(&gate)?)?;
         self.o_proj.forward(&gated)
     }
@@ -949,7 +946,7 @@ impl SparseMoeBlock {
             .last()
             .ok_or_else(|| Exception::custom("gates must have last dim"))?;
         let top_k_start = num_experts - self.top_k;
-        let top_inds = all_inds.index((.., .., top_k_start..));
+        let top_inds = ops::sort_axis(all_inds.index((.., .., top_k_start..)), -1)?;
         let raw_scores = gates.take_along_axis(&top_inds, -1)?;
 
         let top_scores = if self.norm_topk_prob {
