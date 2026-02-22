@@ -118,7 +118,13 @@ mod tests {
     #[test]
     fn prompt_contains_model_id() {
         let mut out = Vec::new();
-        let _ = offer_download("myorg/mymodel", true, &mut out, "n\n".as_bytes(), ok_download);
+        let _ = offer_download(
+            "myorg/mymodel",
+            true,
+            &mut out,
+            "n\n".as_bytes(),
+            ok_download,
+        );
         let prompt = String::from_utf8(out).unwrap();
         assert!(prompt.contains("myorg/mymodel"));
     }
@@ -126,8 +132,7 @@ mod tests {
     #[test]
     fn non_interactive_error_contains_exact_command() {
         let mut out = Vec::new();
-        let result =
-            offer_download("myorg/mymodel", false, &mut out, "".as_bytes(), ok_download);
+        let result = offer_download("myorg/mymodel", false, &mut out, "".as_bytes(), ok_download);
         let err = result.unwrap_err();
         assert!(err.contains("huggingface-cli download myorg/mymodel"));
     }

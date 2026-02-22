@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use mlx_engine::simple::SimpleEngine;
 
-use mlx_server::{build_router, config::ServerConfig, model_download, model_resolver, state::AppState};
+use mlx_server::{
+    build_router, config::ServerConfig, model_download, model_resolver, state::AppState,
+};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,7 +40,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         if status.success() {
                             Ok(())
                         } else {
-                            Err(format!("huggingface-cli download failed for '{model_path}'"))
+                            Err(format!(
+                                "huggingface-cli download failed for '{model_path}'"
+                            ))
                         }
                     },
                 )?;
