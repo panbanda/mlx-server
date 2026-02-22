@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.8](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.7...mlx-server-v0.1.8) (2026-02-22)
+
+
+### Features
+
+* prompt to download missing HF models via huggingface-cli ([#21](https://github.com/panbanda/mlx-server/issues/21)) ([091058a](https://github.com/panbanda/mlx-server/commit/091058a852529e6703fc4d6fa5edced88ecaa5fd))
+
 ## [0.1.7](https://github.com/panbanda/mlx-server/compare/mlx-server-v0.1.6...mlx-server-v0.1.7) (2026-02-20)
 
 
