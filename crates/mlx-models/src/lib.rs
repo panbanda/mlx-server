@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod error;
+pub mod qwen3_moe;
 pub mod qwen3_next;
 pub mod registry;
 pub mod transformer;
@@ -37,6 +38,8 @@ pub enum AnyModel {
     Transformer(Model),
     /// Qwen3-Next hybrid SSM/attention architecture with mixture-of-experts.
     Qwen3Next(Qwen3NextCausalLM),
+    /// Qwen3-MoE sparse Mixture-of-Experts architecture.
+    Qwen3Moe(qwen3_moe::Qwen3MoeCausalLM),
 }
 
 impl AnyModel {
@@ -48,10 +51,9 @@ impl AnyModel {
     ) -> Result<Array, Exception> {
         match (self, cache) {
             (Self::Transformer(m), AnyCache::KV(c)) => m.forward(inputs, mask, c),
+            (Self::Qwen3Moe(m), AnyCache::KV(c)) => m.forward(inputs, mask, c),
             (Self::Qwen3Next(m), AnyCache::Hybrid(c)) => m.forward(inputs, mask, c),
-            (Self::Transformer(_), AnyCache::Hybrid(_)) | (Self::Qwen3Next(_), AnyCache::KV(_)) => {
-                Err(Exception::custom("Model/cache type mismatch"))
-            }
+            _ => Err(Exception::custom("Model/cache type mismatch")),
         }
     }
 
@@ -59,6 +61,20 @@ impl AnyModel {
         match self {
             Self::Transformer(m) => {
                 // Validated positive at Model::new; infallible for positive i32.
+                let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
+                    tracing::warn!(
+                        num_hidden_layers = m.args.num_hidden_layers,
+                        "negative num_hidden_layers; returning empty KV cache"
+                    );
+                    return AnyCache::KV(vec![]);
+                };
+                AnyCache::KV(
+                    (0..n_layers)
+                        .map(|_| Some(cache::SteppingKeyValueCache::new()))
+                        .collect(),
+                )
+            }
+            Self::Qwen3Moe(m) => {
                 let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
                     tracing::warn!(
                         num_hidden_layers = m.args.num_hidden_layers,

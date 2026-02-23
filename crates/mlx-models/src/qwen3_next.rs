@@ -163,7 +163,7 @@ pub struct Qwen3NextModelArgs {
 
 type QuantizedParams = (Param<Array>, Param<Array>, Param<Array>);
 
-fn init_quantized_params() -> Result<QuantizedParams, Exception> {
+pub(crate) fn init_quantized_params() -> Result<QuantizedParams, Exception> {
     Ok((
         Param::new(Array::zeros::<f32>(&[1])?),
         Param::new(Array::zeros::<f32>(&[1])?),
@@ -171,7 +171,7 @@ fn init_quantized_params() -> Result<QuantizedParams, Exception> {
     ))
 }
 
-fn quantized_forward(
+pub(crate) fn quantized_forward(
     x: &Array,
     weight: &Array,
     scales: &Array,
@@ -185,19 +185,19 @@ fn quantized_forward(
 /// Quantized linear layer stored as raw weight/scales/biases arrays.
 /// Forward uses `quantized_matmul` directly.
 #[derive(Debug, Clone, ModuleParameters)]
-struct QLinear {
+pub(crate) struct QLinear {
     #[param]
-    weight: Param<Array>,
+    pub(crate) weight: Param<Array>,
     #[param]
-    scales: Param<Array>,
+    pub(crate) scales: Param<Array>,
     #[param]
-    biases: Param<Array>,
-    group_size: i32,
-    bits: i32,
+    pub(crate) biases: Param<Array>,
+    pub(crate) group_size: i32,
+    pub(crate) bits: i32,
 }
 
 impl QLinear {
-    fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
+    pub(crate) fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
         let (weight, scales, biases) = init_quantized_params()?;
         Ok(Self {
             weight,
@@ -208,7 +208,7 @@ impl QLinear {
         })
     }
 
-    fn forward(&self, x: &Array) -> Result<Array, Exception> {
+    pub(crate) fn forward(&self, x: &Array) -> Result<Array, Exception> {
         quantized_forward(
             x,
             &self.weight,
@@ -222,7 +222,7 @@ impl QLinear {
 
 /// Quantized embedding stored as raw weight/scales/biases arrays.
 #[derive(Debug, Clone, ModuleParameters)]
-struct QEmbedding {
+pub(crate) struct QEmbedding {
     #[param]
     weight: Param<Array>,
     #[param]
@@ -234,7 +234,7 @@ struct QEmbedding {
 }
 
 impl QEmbedding {
-    fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
+    pub(crate) fn new(group_size: i32, bits: i32) -> Result<Self, Exception> {
         let (weight, scales, biases) = init_quantized_params()?;
         Ok(Self {
             weight,
@@ -245,7 +245,7 @@ impl QEmbedding {
         })
     }
 
-    fn forward(&self, indices: &Array) -> Result<Array, Exception> {
+    pub(crate) fn forward(&self, indices: &Array) -> Result<Array, Exception> {
         let full = ops::dequantize(
             &*self.weight,
             &*self.scales,
@@ -256,7 +256,7 @@ impl QEmbedding {
         full.take_axis(indices, 0)
     }
 
-    fn as_linear(&self, x: &Array) -> Result<Array, Exception> {
+    pub(crate) fn as_linear(&self, x: &Array) -> Result<Array, Exception> {
         quantized_forward(
             x,
             &self.weight,
@@ -272,7 +272,7 @@ impl QEmbedding {
 // SwiGLU activation
 // ---------------------------------------------------------------------------
 
-fn swiglu(gate: &Array, x: &Array) -> Result<Array, Exception> {
+pub(crate) fn swiglu(gate: &Array, x: &Array) -> Result<Array, Exception> {
     gate.multiply(nn::sigmoid(gate)?)?.multiply(x)
 }
 
@@ -291,7 +291,7 @@ fn silu_direct(x: &Array) -> Result<Array, Exception> {
 /// `rhs_indices` selects which expert weight matrices to use for each batch
 /// element. Batch dimensions of `x` and `rhs_indices` are broadcast together.
 #[allow(unsafe_code, clippy::too_many_arguments)]
-fn gather_qmm(
+pub(crate) fn gather_qmm(
     x: &Array,
     w: &Array,
     scales: &Array,
@@ -782,7 +782,7 @@ struct Qwen3NextMLP {
     up_proj: QLinear,
 }
 
-fn new_mlp_projections(ql: i32, qb: i32) -> Result<(QLinear, QLinear, QLinear), Exception> {
+pub(crate) fn new_mlp_projections(ql: i32, qb: i32) -> Result<(QLinear, QLinear, QLinear), Exception> {
     Ok((
         QLinear::new(ql, qb)?,
         QLinear::new(ql, qb)?,
@@ -813,7 +813,7 @@ impl Qwen3NextMLP {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, ModuleParameters)]
-struct SwitchMlpWeights {
+pub(crate) struct SwitchMlpWeights {
     #[param]
     gate_proj: QLinear,
     #[param]
@@ -823,7 +823,7 @@ struct SwitchMlpWeights {
 }
 
 impl SwitchMlpWeights {
-    fn new(ql: i32, qb: i32) -> Result<Self, Exception> {
+    pub(crate) fn new(ql: i32, qb: i32) -> Result<Self, Exception> {
         let (gate_proj, down_proj, up_proj) = new_mlp_projections(ql, qb)?;
         Ok(Self {
             gate_proj,
@@ -838,13 +838,15 @@ impl SwitchMlpWeights {
     /// `x`: `[..., D]` input
     /// `indices`: `[..., top_k]` expert indices
     /// Returns: `[..., top_k, D]`
-    fn forward_gather(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
-        // Two expand_dims so x batch dims broadcast with the indices shape.
+    pub(crate) fn forward_gather(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
+        // Reshape so x batch dims broadcast with the indices shape.
         // x: [B, L, D] -> [B, L, 1, 1, D]
         //   batch = [B, L, 1], M=1, K=D
         // indices: [B, L, top_k]
         //   broadcast([B, L, 1], [B, L, top_k]) -> [B, L, top_k]
-        let x_exp = x.expand_dims(-2)?.expand_dims(-2)?;
+        let shape = x.shape();
+        let (b, l, d) = (shape[0], shape[1], shape[2]);
+        let x_exp = x.reshape(&[b, l, 1, 1, d])?;
 
         // Gate/up projections: [B, L, top_k, 1, intermediate]
         let gate_out = gather_qmm(

@@ -44,6 +44,11 @@ pub fn load_model<P: AsRef<Path>>(model_dir: P) -> Result<AnyModel, EngineError>
                 .map_err(EngineError::Model)?;
             Ok(AnyModel::Qwen3Next(model))
         }
+        "qwen3_moe" => {
+            let model = mlx_models::qwen3_moe::load_qwen3_moe_model(&config.model_dir)
+                .map_err(EngineError::Model)?;
+            Ok(AnyModel::Qwen3Moe(model))
+        }
         other => Err(EngineError::Model(
             mlx_models::error::ModelError::UnsupportedModel(other.to_owned()),
         )),
@@ -113,6 +118,12 @@ mod tests {
     fn model_config_from_dir_qwen3_next() {
         let (_dir, result) = config_for_model("qwen3_next");
         assert_eq!(result.unwrap().model_type, "qwen3_next");
+    }
+
+    #[test]
+    fn model_config_from_dir_qwen3_moe() {
+        let (_dir, result) = config_for_model("qwen3_moe");
+        assert_eq!(result.unwrap().model_type, "qwen3_moe");
     }
 
     #[test]

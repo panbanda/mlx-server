@@ -19,7 +19,7 @@ pub fn detect_model_type<P: AsRef<Path>>(model_dir: P) -> Result<String, ModelEr
 pub fn is_supported(model_type: &str) -> bool {
     matches!(
         model_type,
-        "qwen2" | "qwen3" | "llama" | "mistral" | "qwen3_next"
+        "qwen2" | "qwen3" | "llama" | "mistral" | "qwen3_next" | "qwen3_moe"
     )
 }
 
@@ -46,6 +46,7 @@ mod tests {
         assert!(is_supported("qwen3"));
         assert!(is_supported("llama"));
         assert!(is_supported("mistral"));
+        assert!(is_supported("qwen3_moe"));
         assert!(!is_supported("gpt2"));
         assert!(!is_supported("unknown"));
     }
@@ -108,6 +109,17 @@ mod tests {
     fn test_detect_model_type_qwen3_next() {
         let dir = write_model_type_config("qwen3_next");
         assert_eq!(detect_model_type(dir.path()).unwrap(), "qwen3_next");
+    }
+
+    #[test]
+    fn test_is_supported_qwen3_moe() {
+        assert!(is_supported("qwen3_moe"));
+    }
+
+    #[test]
+    fn test_detect_model_type_qwen3_moe() {
+        let dir = write_model_type_config("qwen3_moe");
+        assert_eq!(detect_model_type(dir.path()).unwrap(), "qwen3_moe");
     }
 
     #[test]

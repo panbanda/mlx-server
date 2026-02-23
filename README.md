@@ -121,18 +121,18 @@ curl http://localhost:8000/v1/models
 | Qwen2 | `qwen2` | Qwen2, Qwen2.5 |
 | Qwen3 | `qwen3` | Qwen3 |
 | Qwen3-Next | `qwen3_next` | Qwen3-Coder (hybrid SSM/attention + MoE) |
+| Qwen3-MoE | `qwen3_moe` | Qwen3-30B-A3B, Qwen3-235B-A22B (sparse MoE) |
 
 ## Performance
 
-Decode throughput vs Python `mlx_lm` on Apple Silicon (500 tokens, long-form prompt):
+Decode throughput on M4 Max 128GB (500 tokens, long-form prompt):
 
-| Architecture | Model | Rust tok/s | Python tok/s | Ratio |
+| Model | Rust | Python mlx_lm | llama.cpp | Ollama |
 |---|---|---|---|---|
-| llama | Llama-3.2-1B-Instruct-4bit | 453.5 | 436.7 | 1.04x |
-| mistral | Mistral-7B-Instruct-v0.3-4bit | 103.7 | 102.8 | 1.01x |
-| qwen2 | Arch-Router-1.5B | 132.4 | 130.4 | 1.02x |
-| qwen3 | Qwen3-1.7B-4bit | 307.3 | 282.4 | 1.09x |
-| qwen3_next | Qwen3-Coder-Next-4bit | 75.1 | 86.6 | 0.87x |
+| Llama-3.2-1B-Instruct-4bit | 451.5 | 455.0 | 321.1 | 308.1 |
+| Mistral-7B-Instruct-v0.3-4bit | 100.6 | 102.5 | 86.7 | 84.3 |
+| Qwen3-1.7B-4bit | 287.7 | 307.4 | 219.4 | 184.1 |
+| Qwen3-30B-A3B-8bit (MoE) | 73.6 | 88.0 | 83.1 | 72.5 |
 
 ## Development
 
