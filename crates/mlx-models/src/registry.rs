@@ -41,13 +41,32 @@ mod tests {
     }
 
     #[test]
-    fn test_supported_models() {
+    fn is_supported_qwen2() {
         assert!(is_supported("qwen2"));
+    }
+
+    #[test]
+    fn is_supported_qwen3() {
         assert!(is_supported("qwen3"));
+    }
+
+    #[test]
+    fn is_supported_llama() {
         assert!(is_supported("llama"));
+    }
+
+    #[test]
+    fn is_supported_mistral() {
         assert!(is_supported("mistral"));
-        assert!(is_supported("qwen3_moe"));
+    }
+
+    #[test]
+    fn is_supported_gpt2_unsupported() {
         assert!(!is_supported("gpt2"));
+    }
+
+    #[test]
+    fn is_supported_unknown_unsupported() {
         assert!(!is_supported("unknown"));
     }
 

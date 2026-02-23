@@ -42,6 +42,21 @@ pub enum AnyModel {
     Qwen3Moe(qwen3_moe::Qwen3MoeCausalLM),
 }
 
+fn make_kv_cache(num_hidden_layers: i32) -> AnyCache {
+    let Ok(n_layers) = usize::try_from(num_hidden_layers) else {
+        tracing::warn!(
+            num_hidden_layers,
+            "negative num_hidden_layers; returning empty KV cache"
+        );
+        return AnyCache::KV(vec![]);
+    };
+    AnyCache::KV(
+        (0..n_layers)
+            .map(|_| Some(cache::SteppingKeyValueCache::new()))
+            .collect(),
+    )
+}
+
 impl AnyModel {
     pub fn forward(
         &mut self,
@@ -59,35 +74,8 @@ impl AnyModel {
 
     pub fn make_cache(&self) -> AnyCache {
         match self {
-            Self::Transformer(m) => {
-                // Validated positive at Model::new; infallible for positive i32.
-                let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
-                    tracing::warn!(
-                        num_hidden_layers = m.args.num_hidden_layers,
-                        "negative num_hidden_layers; returning empty KV cache"
-                    );
-                    return AnyCache::KV(vec![]);
-                };
-                AnyCache::KV(
-                    (0..n_layers)
-                        .map(|_| Some(cache::SteppingKeyValueCache::new()))
-                        .collect(),
-                )
-            }
-            Self::Qwen3Moe(m) => {
-                let Ok(n_layers) = usize::try_from(m.args.num_hidden_layers) else {
-                    tracing::warn!(
-                        num_hidden_layers = m.args.num_hidden_layers,
-                        "negative num_hidden_layers; returning empty KV cache"
-                    );
-                    return AnyCache::KV(vec![]);
-                };
-                AnyCache::KV(
-                    (0..n_layers)
-                        .map(|_| Some(cache::SteppingKeyValueCache::new()))
-                        .collect(),
-                )
-            }
+            Self::Transformer(m) => make_kv_cache(m.args.num_hidden_layers),
+            Self::Qwen3Moe(m) => make_kv_cache(m.args.num_hidden_layers),
             Self::Qwen3Next(m) => AnyCache::Hybrid(m.make_cache()),
         }
     }
@@ -469,5 +457,102 @@ mod tests {
     fn any_cache_hybrid_variant() {
         let cache = AnyCache::Hybrid(Vec::new());
         assert!(matches!(cache, AnyCache::Hybrid(_)));
+    }
+
+    #[test]
+    fn make_kv_cache_positive_layers() {
+        let cache = super::make_kv_cache(4);
+        match &cache {
+            AnyCache::KV(layers) => {
+                assert_eq!(layers.len(), 4);
+                for c in layers {
+                    assert!(c.is_some());
+                }
+            }
+            AnyCache::Hybrid(_) => panic!("Expected KV variant"),
+        }
+    }
+
+    #[test]
+    fn make_kv_cache_zero_layers() {
+        let cache = super::make_kv_cache(0);
+        match &cache {
+            AnyCache::KV(layers) => assert!(layers.is_empty()),
+            AnyCache::Hybrid(_) => panic!("Expected KV variant"),
+        }
+    }
+
+    #[test]
+    fn make_kv_cache_negative_layers() {
+        let cache = super::make_kv_cache(-1);
+        match &cache {
+            AnyCache::KV(layers) => assert!(layers.is_empty()),
+            AnyCache::Hybrid(_) => panic!("Expected KV variant"),
+        }
+    }
+
+    fn small_qwen3_moe_args() -> qwen3_moe::Qwen3MoeModelArgs {
+        qwen3_moe::Qwen3MoeModelArgs {
+            model_type: "qwen3_moe".to_owned(),
+            hidden_size: 32,
+            num_hidden_layers: 2,
+            intermediate_size: 64,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            rms_norm_eps: 1e-6,
+            vocab_size: 64,
+            max_position_embeddings: 128,
+            rope_theta: 10000.0,
+            tie_word_embeddings: true,
+            attention_bias: false,
+            rope_scaling: None,
+            head_dim: None,
+            num_experts: 4,
+            num_experts_per_tok: 2,
+            moe_intermediate_size: 16,
+            decoder_sparse_step: 1,
+            mlp_only_layers: vec![],
+            norm_topk_prob: true,
+            quantization: None,
+        }
+    }
+
+    #[test]
+    fn any_model_qwen3_moe_make_cache_returns_kv() {
+        let model = qwen3_moe::Qwen3MoeCausalLM::new(small_qwen3_moe_args()).unwrap();
+        let any = AnyModel::Qwen3Moe(model);
+        let cache = any.make_cache();
+        match &cache {
+            AnyCache::KV(layers) => assert_eq!(layers.len(), 2),
+            AnyCache::Hybrid(_) => panic!("Expected KV cache for Qwen3Moe"),
+        }
+    }
+
+    #[test]
+    fn any_model_qwen3_moe_forward_with_hybrid_cache_errors() {
+        let model = qwen3_moe::Qwen3MoeCausalLM::new(small_qwen3_moe_args()).unwrap();
+        let mut any = AnyModel::Qwen3Moe(model);
+        let mut cache = AnyCache::Hybrid(vec![]);
+        let input = Array::from_slice(&[1_i32], &[1, 1]);
+        let result = any.forward(&input, None, &mut cache);
+        assert!(result.is_err(), "Qwen3Moe with Hybrid cache should error");
+    }
+
+    #[test]
+    fn any_model_qwen3_moe_forward_dispatches_to_kv_cache() {
+        let model = qwen3_moe::Qwen3MoeCausalLM::new(small_qwen3_moe_args()).unwrap();
+        let mut any = AnyModel::Qwen3Moe(model);
+        let mut cache = any.make_cache();
+        let input = Array::from_slice(&[1_i32, 2, 3], &[1, 3]);
+        // Forward dispatches correctly (Qwen3Moe + KV cache), but returns
+        // Err because unloaded QLinear weights are float32 placeholders.
+        // The important assertion: it does NOT return "Model/cache type mismatch".
+        let result = any.forward(&input, None, &mut cache);
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            !err_msg.contains("mismatch"),
+            "Should dispatch correctly, not hit mismatch arm"
+        );
     }
 }

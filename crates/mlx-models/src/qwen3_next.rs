@@ -782,7 +782,10 @@ struct Qwen3NextMLP {
     up_proj: QLinear,
 }
 
-pub(crate) fn new_mlp_projections(ql: i32, qb: i32) -> Result<(QLinear, QLinear, QLinear), Exception> {
+pub(crate) fn new_mlp_projections(
+    ql: i32,
+    qb: i32,
+) -> Result<(QLinear, QLinear, QLinear), Exception> {
     Ok((
         QLinear::new(ql, qb)?,
         QLinear::new(ql, qb)?,
@@ -838,17 +841,22 @@ impl SwitchMlpWeights {
     /// `x`: `[..., D]` input
     /// `indices`: `[..., top_k]` expert indices
     /// Returns: `[..., top_k, D]`
-    pub(crate) fn forward_gather(&self, x: &Array, indices: &Array, sorted: bool) -> Result<Array, Exception> {
+    pub(crate) fn forward_gather(
+        &self,
+        x: &Array,
+        indices: &Array,
+        sorted: bool,
+    ) -> Result<Array, Exception> {
         // Reshape so x batch dims broadcast with the indices shape.
         // x: [B, L, D] -> [B, L, 1, 1, D]
         //   batch = [B, L, 1], M=1, K=D
         // indices: [B, L, top_k]
         //   broadcast([B, L, 1], [B, L, top_k]) -> [B, L, top_k]
         let shape = x.shape();
-        if shape.len() < 3 {
-            return Err(Exception::custom("forward_gather input must be [B, L, D]"));
-        }
-        let (b, l, d) = (shape[0], shape[1], shape[2]);
+        let err = || Exception::custom("forward_gather input must be [B, L, D]");
+        let b = *shape.first().ok_or_else(err)?;
+        let l = *shape.get(1).ok_or_else(err)?;
+        let d = *shape.get(2).ok_or_else(err)?;
         let x_exp = x.reshape(&[b, l, 1, 1, d])?;
 
         // Gate/up projections: [B, L, top_k, 1, intermediate]

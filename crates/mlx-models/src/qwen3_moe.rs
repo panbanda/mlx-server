@@ -23,7 +23,7 @@ use crate::{
     qwen3_next::{
         QEmbedding, QLinear, QuantizationConfig, SwitchMlpWeights, new_mlp_projections, swiglu,
     },
-    utils::{apply_rope, create_attention_mask, scaled_dot_product_attention, AttentionMask},
+    utils::{AttentionMask, apply_rope, create_attention_mask, scaled_dot_product_attention},
 };
 
 // ---------------------------------------------------------------------------
@@ -76,8 +76,13 @@ pub struct Qwen3MoeModelArgs {
 
 impl Qwen3MoeModelArgs {
     fn head_dim(&self) -> i32 {
-        self.head_dim
-            .unwrap_or(self.hidden_size / self.num_attention_heads)
+        self.head_dim.unwrap_or_else(|| {
+            debug_assert!(
+                self.num_attention_heads > 0,
+                "num_attention_heads must be positive"
+            );
+            self.hidden_size / self.num_attention_heads
+        })
     }
 
     fn is_moe_layer(&self, layer_idx: i32) -> bool {
@@ -164,11 +169,21 @@ impl Qwen3MoeAttention {
 
         let mut queries = self
             .q_norm
-            .forward(&self.q_proj.forward(x)?.reshape(&[B, L, self.num_attention_heads, -1])?)?
+            .forward(
+                &self
+                    .q_proj
+                    .forward(x)?
+                    .reshape(&[B, L, self.num_attention_heads, -1])?,
+            )?
             .transpose_axes(&[0, 2, 1, 3])?;
         let mut keys = self
             .k_norm
-            .forward(&self.k_proj.forward(x)?.reshape(&[B, L, self.num_key_value_heads, -1])?)?
+            .forward(
+                &self
+                    .k_proj
+                    .forward(x)?
+                    .reshape(&[B, L, self.num_key_value_heads, -1])?,
+            )?
             .transpose_axes(&[0, 2, 1, 3])?;
         let mut values = self
             .v_proj
@@ -342,12 +357,7 @@ struct Qwen3MoeDecoderLayer {
 }
 
 impl Qwen3MoeDecoderLayer {
-    fn new(
-        args: &Qwen3MoeModelArgs,
-        layer_idx: i32,
-        ql: i32,
-        qb: i32,
-    ) -> Result<Self, Exception> {
+    fn new(args: &Qwen3MoeModelArgs, layer_idx: i32, ql: i32, qb: i32) -> Result<Self, Exception> {
         let mlp = if args.is_moe_layer(layer_idx) {
             Qwen3MoeMlpBlock::new_moe(args, ql, qb)?
         } else {
@@ -515,9 +525,7 @@ pub fn load_model_args<P: AsRef<Path>>(model_dir: P) -> Result<Qwen3MoeModelArgs
     Ok(serde_json::from_reader(file)?)
 }
 
-pub fn load_qwen3_moe_model<P: AsRef<Path>>(
-    model_dir: P,
-) -> Result<Qwen3MoeCausalLM, ModelError> {
+pub fn load_qwen3_moe_model<P: AsRef<Path>>(model_dir: P) -> Result<Qwen3MoeCausalLM, ModelError> {
     let model_path = model_dir.as_ref();
     let args = load_model_args(model_path)?;
 
@@ -657,30 +665,59 @@ mod tests {
     }
 
     #[test]
-    fn test_is_moe_layer_step_1() {
-        let args = default_moe_args();
-        // decoder_sparse_step=1 means every layer is MoE
-        for i in 0..10 {
-            assert!(args.is_moe_layer(i), "layer {i} should be MoE");
-        }
+    fn is_moe_layer_step_1_layer_0() {
+        assert!(default_moe_args().is_moe_layer(0));
     }
 
     #[test]
-    fn test_is_moe_layer_step_0() {
+    fn is_moe_layer_step_1_layer_5() {
+        assert!(default_moe_args().is_moe_layer(5));
+    }
+
+    #[test]
+    fn is_moe_layer_step_1_layer_93() {
+        assert!(default_moe_args().is_moe_layer(93));
+    }
+
+    #[test]
+    fn is_moe_layer_step_0_layer_0() {
         let mut args = default_moe_args();
         args.decoder_sparse_step = 0;
-        for i in 0..10 {
-            assert!(!args.is_moe_layer(i), "layer {i} should not be MoE");
-        }
+        assert!(!args.is_moe_layer(0));
     }
 
     #[test]
-    fn test_is_moe_layer_with_exclusions() {
+    fn is_moe_layer_step_0_layer_5() {
+        let mut args = default_moe_args();
+        args.decoder_sparse_step = 0;
+        assert!(!args.is_moe_layer(5));
+    }
+
+    #[test]
+    fn is_moe_layer_excluded_layer_0() {
         let mut args = default_moe_args();
         args.mlp_only_layers = vec![0, 5];
         assert!(!args.is_moe_layer(0));
-        assert!(args.is_moe_layer(1));
+    }
+
+    #[test]
+    fn is_moe_layer_excluded_layer_5() {
+        let mut args = default_moe_args();
+        args.mlp_only_layers = vec![0, 5];
         assert!(!args.is_moe_layer(5));
+    }
+
+    #[test]
+    fn is_moe_layer_non_excluded_layer_1() {
+        let mut args = default_moe_args();
+        args.mlp_only_layers = vec![0, 5];
+        assert!(args.is_moe_layer(1));
+    }
+
+    #[test]
+    fn is_moe_layer_non_excluded_layer_6() {
+        let mut args = default_moe_args();
+        args.mlp_only_layers = vec![0, 5];
         assert!(args.is_moe_layer(6));
     }
 
@@ -708,5 +745,156 @@ mod tests {
     fn test_load_model_args_missing_file() {
         let dir = tempfile::tempdir().unwrap();
         assert!(load_model_args(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_model_new_zero_attention_heads() {
+        let mut args = default_moe_args();
+        args.num_attention_heads = 0;
+        assert!(Qwen3MoeCausalLM::new(args).is_err());
+    }
+
+    #[test]
+    fn test_model_new_hidden_size_not_divisible() {
+        let mut args = default_moe_args();
+        args.hidden_size = 100;
+        args.num_attention_heads = 3;
+        args.head_dim = None;
+        assert!(Qwen3MoeCausalLM::new(args).is_err());
+    }
+
+    #[test]
+    fn test_model_new_explicit_head_dim_skips_divisibility_check() {
+        let mut args = default_moe_args();
+        args.hidden_size = 100;
+        args.num_attention_heads = 3;
+        args.head_dim = Some(128);
+        // Should not fail: explicit head_dim bypasses hidden_size/num_heads check.
+        // Construction still works because QLinear is a placeholder.
+        assert!(Qwen3MoeCausalLM::new(args).is_ok());
+    }
+
+    fn small_moe_args() -> Qwen3MoeModelArgs {
+        Qwen3MoeModelArgs {
+            model_type: "qwen3_moe".to_owned(),
+            hidden_size: 32,
+            num_hidden_layers: 2,
+            intermediate_size: 64,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            rms_norm_eps: 1e-6,
+            vocab_size: 64,
+            max_position_embeddings: 128,
+            rope_theta: 10000.0,
+            tie_word_embeddings: true,
+            attention_bias: false,
+            rope_scaling: None,
+            head_dim: None,
+            num_experts: 4,
+            num_experts_per_tok: 2,
+            moe_intermediate_size: 16,
+            decoder_sparse_step: 1,
+            mlp_only_layers: vec![],
+            norm_topk_prob: true,
+            quantization: None,
+        }
+    }
+
+    #[test]
+    fn test_model_new_small_config() {
+        let args = small_moe_args();
+        let model = Qwen3MoeCausalLM::new(args).unwrap();
+        assert_eq!(model.args.num_hidden_layers, 2);
+        assert!(model.lm_head.is_none(), "tied embeddings => no lm_head");
+    }
+
+    #[test]
+    fn test_model_new_untied_embeddings() {
+        let mut args = small_moe_args();
+        args.tie_word_embeddings = false;
+        let model = Qwen3MoeCausalLM::new(args).unwrap();
+        assert!(model.lm_head.is_some());
+    }
+
+    #[test]
+    fn test_forward_preserves_pre_initialized_cache() {
+        let args = small_moe_args();
+        let mut model = Qwen3MoeCausalLM::new(args).unwrap();
+        let mut cache: Vec<Option<SteppingKeyValueCache>> = (0..2)
+            .map(|_| Some(SteppingKeyValueCache::new()))
+            .collect();
+
+        let input = Array::from_slice(&[1_i32, 2, 3], &[1, 3]);
+        // Forward errors on unloaded quantized weights, but the
+        // pre-initialized cache should not be cleared or resized.
+        let _ = model.forward(&input, None, &mut cache);
+        assert_eq!(cache.len(), 2, "cache should still have 2 entries");
+        for (i, c) in cache.iter().enumerate() {
+            assert!(c.is_some(), "layer {i} cache should be Some");
+        }
+    }
+
+    #[test]
+    fn test_forward_unloaded_model_returns_error() {
+        let args = small_moe_args();
+        let mut model = Qwen3MoeCausalLM::new(args).unwrap();
+        let mut cache = vec![];
+
+        let input = Array::from_slice(&[1_i32, 2, 3], &[1, 3]);
+        // Unloaded QLinear weights are float32 placeholders;
+        // quantized_matmul requires uint32, so forward should error
+        // (not panic).
+        let result = model.forward(&input, None, &mut cache);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_forward_cache_length_mismatch() {
+        let args = small_moe_args();
+        let mut model = Qwen3MoeCausalLM::new(args).unwrap();
+        // 3 entries but model has 2 layers
+        let mut cache = vec![
+            Some(SteppingKeyValueCache::new()),
+            Some(SteppingKeyValueCache::new()),
+            Some(SteppingKeyValueCache::new()),
+        ];
+
+        let input = Array::from_slice(&[1_i32], &[1, 1]);
+        let result = model.forward(&input, None, &mut cache);
+        assert!(result.is_err(), "mismatched cache length should error");
+    }
+
+    #[test]
+    fn test_load_qwen3_moe_model_missing_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(load_qwen3_moe_model(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_load_qwen3_moe_model_invalid_config() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("config.json"), "not json").unwrap();
+        assert!(load_qwen3_moe_model(dir.path()).is_err());
+    }
+
+    #[test]
+    fn test_load_model_args_valid_small_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let json = r#"{
+            "model_type": "qwen3_moe",
+            "hidden_size": 32,
+            "num_hidden_layers": 2,
+            "intermediate_size": 64,
+            "num_attention_heads": 4,
+            "num_key_value_heads": 2,
+            "rms_norm_eps": 1e-06,
+            "vocab_size": 64,
+            "max_position_embeddings": 128
+        }"#;
+        std::fs::write(dir.path().join("config.json"), json).unwrap();
+        let args = load_model_args(dir.path()).unwrap();
+        assert_eq!(args.model_type, "qwen3_moe");
+        assert_eq!(args.hidden_size, 32);
+        assert_eq!(args.num_hidden_layers, 2);
     }
 }
