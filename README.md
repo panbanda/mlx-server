@@ -125,14 +125,16 @@ curl http://localhost:8000/v1/models
 
 ## Performance
 
-Decode throughput on M4 Max 128GB (500 tokens, long-form prompt):
+Decode throughput on M4 Max 128GB. Prompt: long-form technical design document (~100 input tokens), 500 generated tokens, temperature=0. Each engine runs alone (no concurrent processes), with a warmup pass before measurement.
 
 | Model | Rust | Python mlx_lm | llama.cpp | Ollama |
 |---|---|---|---|---|
-| Llama-3.2-1B-Instruct-4bit | 451.5 | 455.0 | 321.1 | 308.1 |
-| Mistral-7B-Instruct-v0.3-4bit | 100.6 | 102.5 | 86.7 | 84.3 |
-| Qwen3-1.7B-4bit | 287.7 | 307.4 | 219.4 | 184.1 |
-| Qwen3-30B-A3B-8bit (MoE) | 73.6 | 88.0 | 83.1 | 72.5 |
+| Llama-3.2-1B-Instruct-4bit | 449.8 | 453.3 | 313.5 | 305.2 |
+| Mistral-7B-Instruct-v0.3-4bit | 101.1 | 101.6 | 86.7 | 84.7 |
+| Qwen3-1.7B-4bit | 303.4 | 305.4 | 215.7 | 183.1 |
+| Qwen3-30B-A3B-8bit (MoE) | 73.2 | 88.0 | 82.7 | 72.8 |
+
+Quantization: MLX models use 4-bit (8-bit for MoE). llama.cpp/Ollama use Q4_K_M (Q8_0 for MoE).
 
 ## Development
 
