@@ -286,4 +286,50 @@ mod tests {
         let sdpa_mask: ScaledDotProductAttentionMask = (&mask).into();
         assert!(matches!(sdpa_mask, ScaledDotProductAttentionMask::Causal));
     }
+
+    // -----------------------------------------------------------------------
+    // create_batched_decode_mask
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_batched_decode_mask_shape() {
+        let mask = create_batched_decode_mask(&[5, 3, 7], 7).unwrap();
+        assert_eq!(mask.shape(), &[3, 1, 1, 7]);
+    }
+
+    #[test]
+    fn test_batched_decode_mask_single_request() {
+        let mask = create_batched_decode_mask(&[4], 4).unwrap();
+        assert_eq!(mask.shape(), &[1, 1, 1, 4]);
+        let flat: Vec<bool> = mask.as_slice().to_vec();
+        // All 4 positions valid
+        assert_eq!(flat, vec![true, true, true, true]);
+    }
+
+    #[test]
+    fn test_batched_decode_mask_values() {
+        // Request 0 has 3 tokens, request 1 has 5 tokens, max_kv_len=5
+        let mask = create_batched_decode_mask(&[3, 5], 5).unwrap();
+        let flat: Vec<bool> = mask.reshape(&[2, 5]).unwrap().as_slice().to_vec();
+        // Request 0: positions 0,1,2 valid (< 3), positions 3,4 invalid
+        assert_eq!(&flat[0..5], &[true, true, true, false, false]);
+        // Request 1: all 5 positions valid
+        assert_eq!(&flat[5..10], &[true, true, true, true, true]);
+    }
+
+    #[test]
+    fn test_batched_decode_mask_equal_lengths() {
+        let mask = create_batched_decode_mask(&[4, 4], 4).unwrap();
+        let flat: Vec<bool> = mask.reshape(&[2, 4]).unwrap().as_slice().to_vec();
+        // Both requests: all 4 positions valid
+        assert!(flat.iter().all(|&v| v));
+    }
+
+    #[test]
+    fn test_batched_decode_mask_broadcasts_with_sdpa() {
+        // Verify shape [N, 1, 1, max_kv_len] broadcasts with [N, n_heads, 1, max_kv_len]
+        let mask = create_batched_decode_mask(&[3, 5], 5).unwrap();
+        assert_eq!(mask.shape(), &[2, 1, 1, 5]);
+        // This shape broadcasts correctly: the 1s expand to n_heads and seq_len
+    }
 }

@@ -419,4 +419,62 @@ TOOLS:{{ tools | length }}
         let renderer = ChatTemplateRenderer::new(r"{{ undefined_variable.nested_field }}").unwrap();
         assert!(renderer.apply(&[msg("user", "hi")], None, false).is_err());
     }
+
+    // -----------------------------------------------------------------------
+    // try_from_model_dir
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn try_from_model_dir_empty_directory_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = ChatTemplateRenderer::try_from_model_dir(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_from_model_dir_config_without_template_returns_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"model_type": "starcoder2"}"#,
+        )
+        .unwrap();
+        let result = ChatTemplateRenderer::try_from_model_dir(dir.path()).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn try_from_model_dir_with_jinja_returns_some() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("chat_template.jinja"),
+            r"{{ messages[0].content }}",
+        )
+        .unwrap();
+        let result = ChatTemplateRenderer::try_from_model_dir(dir.path()).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_from_model_dir_with_config_template_returns_some() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            r#"{"chat_template": "{{ messages[0].content }}"}"#,
+        )
+        .unwrap();
+        let result = ChatTemplateRenderer::try_from_model_dir(dir.path()).unwrap();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn try_from_model_dir_malformed_json_returns_err() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("tokenizer_config.json"),
+            "not valid json {{{",
+        )
+        .unwrap();
+        assert!(ChatTemplateRenderer::try_from_model_dir(dir.path()).is_err());
+    }
 }

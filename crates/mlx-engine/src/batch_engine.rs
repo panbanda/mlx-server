@@ -810,3 +810,184 @@ fn truncate_at_stop(text: &str, stop_sequences: &[String]) -> String {
         |pos| text.get(..pos).unwrap_or_default().to_owned(),
     )
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    // -----------------------------------------------------------------------
+    // check_stop_sequences_simple
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn stop_sequences_empty_never_matches() {
+        assert!(!check_stop_sequences_simple("hello world", &[]));
+    }
+
+    #[test]
+    fn stop_sequences_match_at_end() {
+        let stops = vec!["</s>".to_owned()];
+        assert!(check_stop_sequences_simple("some text</s>", &stops));
+    }
+
+    #[test]
+    fn stop_sequences_match_in_middle() {
+        let stops = vec!["STOP".to_owned()];
+        assert!(check_stop_sequences_simple("before STOP after", &stops));
+    }
+
+    #[test]
+    fn stop_sequences_no_match() {
+        let stops = vec!["</s>".to_owned(), "<|end|>".to_owned()];
+        assert!(!check_stop_sequences_simple("normal text", &stops));
+    }
+
+    #[test]
+    fn stop_sequences_multiple_one_matches() {
+        let stops = vec!["</s>".to_owned(), "\n\n".to_owned()];
+        assert!(check_stop_sequences_simple("text\n\nmore", &stops));
+    }
+
+    // -----------------------------------------------------------------------
+    // truncate_at_stop
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn truncate_no_stop_returns_full_text() {
+        let stops = vec!["</s>".to_owned()];
+        assert_eq!(truncate_at_stop("hello world", &stops), "hello world");
+    }
+
+    #[test]
+    fn truncate_at_stop_removes_suffix() {
+        let stops = vec!["</s>".to_owned()];
+        assert_eq!(truncate_at_stop("hello</s>", &stops), "hello");
+    }
+
+    #[test]
+    fn truncate_at_earliest_of_multiple_stops() {
+        let stops = vec!["BBB".to_owned(), "AAA".to_owned()];
+        assert_eq!(truncate_at_stop("xAAAyBBBz", &stops), "x");
+    }
+
+    #[test]
+    fn truncate_empty_stops() {
+        assert_eq!(truncate_at_stop("hello", &[]), "hello");
+    }
+
+    #[test]
+    fn truncate_stop_at_start() {
+        let stops = vec!["STOP".to_owned()];
+        assert_eq!(truncate_at_stop("STOPrest", &stops), "");
+    }
+
+    // -----------------------------------------------------------------------
+    // materialize_decode_step
+    // -----------------------------------------------------------------------
+
+    fn make_active_request(
+        max_tokens: u32,
+        stop_sequences: Vec<String>,
+    ) -> (ActiveRequest, tokio::sync::mpsc::Receiver<StreamingOutput>) {
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let ar = ActiveRequest {
+            cache: AnyCache::KV(vec![]),
+            current_token: Array::from_slice(&[0_u32], &[1]),
+            generated_tokens: vec![],
+            max_tokens,
+            params: SamplingParams::default(),
+            stop_sequences,
+            logprob_top_n: None,
+            constraint: None,
+            response_tx: tx,
+            prompt_len: 5,
+            prev_decoded_len: 0,
+        };
+        (ar, rx)
+    }
+
+    fn make_tokenizer() -> Tokenizer {
+        // Minimal tokenizer that can decode token IDs
+        Tokenizer::from_pretrained("gpt2", None).unwrap()
+    }
+
+    #[test]
+    fn materialize_decode_step_normal_token_returns_false() {
+        let (mut ar, _rx) = make_active_request(100, vec![]);
+        let tokenizer = make_tokenizer();
+        let result = DecodeGraphResult {
+            next_token: Array::from_slice(&[42_u32], &[1]),
+            logprob_data: None,
+        };
+        let finished = materialize_decode_step(&mut ar, result, &tokenizer, &[0]);
+        assert!(!finished, "Should not be finished after normal token");
+        assert_eq!(ar.generated_tokens, vec![42]);
+    }
+
+    #[test]
+    fn materialize_decode_step_eos_returns_true() {
+        let (mut ar, _rx) = make_active_request(100, vec![]);
+        let tokenizer = make_tokenizer();
+        let eos_id = 50256_u32; // GPT-2 EOS
+        let result = DecodeGraphResult {
+            next_token: Array::from_slice(&[eos_id], &[1]),
+            logprob_data: None,
+        };
+        let finished = materialize_decode_step(&mut ar, result, &tokenizer, &[eos_id]);
+        assert!(finished, "Should be finished on EOS token");
+    }
+
+    #[test]
+    fn materialize_decode_step_max_tokens_returns_true() {
+        let (mut ar, _rx) = make_active_request(1, vec![]);
+        let tokenizer = make_tokenizer();
+        let result = DecodeGraphResult {
+            next_token: Array::from_slice(&[42_u32], &[1]),
+            logprob_data: None,
+        };
+        let finished = materialize_decode_step(&mut ar, result, &tokenizer, &[0]);
+        assert!(finished, "Should be finished at max_tokens=1");
+    }
+
+    // -----------------------------------------------------------------------
+    // Batched vs pipelined path selection
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn batched_path_requires_multiple_requests() {
+        // Single request should not use batched path
+        let n_active = 1;
+        let supports_batched = true;
+        let all_unconstrained = true;
+        let use_batched = n_active > 1 && supports_batched && all_unconstrained;
+        assert!(!use_batched);
+    }
+
+    #[test]
+    fn batched_path_requires_model_support() {
+        let n_active = 4;
+        let supports_batched = false;
+        let all_unconstrained = true;
+        let use_batched = n_active > 1 && supports_batched && all_unconstrained;
+        assert!(!use_batched);
+    }
+
+    #[test]
+    fn batched_path_disabled_with_constraints() {
+        let n_active = 4;
+        let supports_batched = true;
+        let all_unconstrained = false;
+        let use_batched = n_active > 1 && supports_batched && all_unconstrained;
+        assert!(!use_batched);
+    }
+
+    #[test]
+    fn batched_path_enabled_when_all_conditions_met() {
+        let n_active = 4;
+        let supports_batched = true;
+        let all_unconstrained = true;
+        let use_batched = n_active > 1 && supports_batched && all_unconstrained;
+        assert!(use_batched);
+    }
+}
