@@ -106,6 +106,24 @@ where
     }
 }
 
+/// Create a boolean attention mask for batched decode.
+///
+/// Each request attends only to its own valid KV positions (not padding).
+/// Returns shape `[N, 1, max_kv_len]` where `mask[i, 0, j]` is true when
+/// `j < kv_lengths[i]`.
+pub(crate) fn create_batched_decode_mask(
+    kv_lengths: &[i32],
+    max_kv_len: i32,
+) -> Result<Array, Exception> {
+    let n = i32::try_from(kv_lengths.len())
+        .map_err(|_| Exception::custom("too many requests for batched mask"))?;
+    let lengths = Array::from_slice(kv_lengths, &[n]).reshape(&[n, 1])?;
+    let positions = arange!(stop = max_kv_len)?.reshape(&[1, max_kv_len])?;
+    let mask = lengths.gt(positions)?;
+    // 4D so it broadcasts correctly with SDPA's [N, n_heads, 1, max_kv_len]
+    mask.reshape(&[n, 1, 1, max_kv_len])
+}
+
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {

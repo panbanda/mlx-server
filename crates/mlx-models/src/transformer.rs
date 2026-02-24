@@ -11,15 +11,19 @@ use mlx_rs::{
     error::Exception,
     macros::{ModuleParameters, Quantizable},
     module::Module,
-    nn,
+    nn, ops,
+    ops::indexing::IndexOp,
     quantization::MaybeQuantized,
 };
 use serde::Deserialize;
 
 use crate::{
-    cache::KeyValueCache,
+    cache::{KeyValueCache, SteppingKeyValueCache},
     error::ModelError,
-    utils::{AttentionMask, apply_rope, create_attention_mask, scaled_dot_product_attention},
+    utils::{
+        AttentionMask, apply_rope, create_attention_mask, create_batched_decode_mask,
+        scaled_dot_product_attention,
+    },
 };
 
 const fn default_rope_theta() -> f32 {
@@ -644,6 +648,175 @@ impl Model {
                 mask: computed_mask.as_ref(),
                 cache: layer_cache.as_mut(),
             })?;
+        }
+
+        let out = self.model.norm.forward(&h)?;
+        self.apply_lm_head(&out)
+    }
+
+    /// Batched decode: one forward pass for N requests each with 1 token.
+    ///
+    /// Heavy ops (projections, MLP, LM head) run batched. Per-request ops
+    /// (RoPE, KV cache update) loop over individual requests since each has
+    /// a different position offset and cache state.
+    #[allow(clippy::indexing_slicing)]
+    pub fn forward_batched(
+        &mut self,
+        inputs: &Array,
+        kv_caches: &mut [&mut Vec<Option<SteppingKeyValueCache>>],
+    ) -> Result<Array, Exception> {
+        let n = inputs.shape()[0];
+        let num_layers = self.model.layers.len();
+        let head_dim = self.args.head_dim();
+
+        // Per-request offsets (from layer 0's cache, all layers have the same offset)
+        let offsets: Vec<i32> = kv_caches
+            .iter()
+            .map(|c| {
+                c.first()
+                    .and_then(|c| c.as_ref())
+                    .map_or(0, |c| c.offset())
+            })
+            .collect();
+        let max_kv_len = offsets.iter().map(|&o| o + 1).max().unwrap_or(1);
+        let kv_lengths: Vec<i32> = offsets.iter().map(|&o| o + 1).collect();
+
+        let mut h = self.model.embed_tokens.forward(inputs)?;
+
+        for layer_idx in 0..num_layers {
+            let layer = &mut self.model.layers[layer_idx];
+            let n_heads = layer.self_attn.n_heads;
+            let n_kv_heads = layer.self_attn.n_kv_heads;
+            let scale = layer.self_attn.scale;
+
+            // Extract RoPE params as scalars (avoids borrow conflict with mutable layer)
+            let rope_dims = layer.self_attn.rope.dimensions;
+            let rope_traditional = layer.self_attn.rope.traditional;
+            let rope_base = layer.self_attn.rope.base;
+            let rope_scale = layer.self_attn.rope.scale;
+
+            // --- Batched: layernorm + Q/K/V projections ---
+            let normed = layer.input_layernorm.forward(&h)?;
+            let q_raw = layer.self_attn.q_proj.forward(&normed)?;
+            let k_raw = layer.self_attn.k_proj.forward(&normed)?;
+            let v_raw = layer.self_attn.v_proj.forward(&normed)?;
+
+            // [N, 1, proj_dim] -> [N, heads, 1, head_dim]
+            let mut queries = q_raw
+                .reshape(&[n, 1, n_heads, -1])?
+                .transpose_axes(&[0, 2, 1, 3])?;
+            let mut keys = k_raw
+                .reshape(&[n, 1, n_kv_heads, -1])?
+                .transpose_axes(&[0, 2, 1, 3])?;
+            let values = v_raw
+                .reshape(&[n, 1, n_kv_heads, -1])?
+                .transpose_axes(&[0, 2, 1, 3])?;
+
+            // --- Batched: QK norm (Qwen3) ---
+            if let Some(ref mut qn) = layer.self_attn.q_norm {
+                queries = qn.forward(&queries)?;
+            }
+            if let Some(ref mut kn) = layer.self_attn.k_norm {
+                keys = kn.forward(&keys)?;
+            }
+
+            // --- Per-request: RoPE + KV cache update + pad ---
+            // Flatten to 2D for reliable per-request slicing
+            let q_flat = queries.reshape(&[n, n_heads * head_dim])?;
+            let k_flat = keys.reshape(&[n, n_kv_heads * head_dim])?;
+            let v_flat = values.reshape(&[n, n_kv_heads * head_dim])?;
+
+            let mut all_queries = Vec::with_capacity(n as usize);
+            let mut all_keys = Vec::with_capacity(n as usize);
+            let mut all_values = Vec::with_capacity(n as usize);
+
+            for req_idx in 0..n as usize {
+                let i = req_idx as i32;
+
+                let q_i = q_flat
+                    .index((i..i + 1, ..))
+                    .reshape(&[1, n_heads, 1, head_dim])?;
+                let k_i = k_flat
+                    .index((i..i + 1, ..))
+                    .reshape(&[1, n_kv_heads, 1, head_dim])?;
+                let v_i = v_flat
+                    .index((i..i + 1, ..))
+                    .reshape(&[1, n_kv_heads, 1, head_dim])?;
+
+                // RoPE with this request's offset
+                let q_rope = mlx_rs::fast::rope(
+                    &q_i,
+                    rope_dims,
+                    rope_traditional,
+                    rope_base,
+                    rope_scale,
+                    offsets[req_idx],
+                    None,
+                )?;
+                let k_rope = mlx_rs::fast::rope(
+                    &k_i,
+                    rope_dims,
+                    rope_traditional,
+                    rope_base,
+                    rope_scale,
+                    offsets[req_idx],
+                    None,
+                )?;
+
+                // Update this request's KV cache
+                let cache = kv_caches[req_idx][layer_idx]
+                    .as_mut()
+                    .ok_or_else(|| Exception::custom("Cache not initialized"))?;
+                let (full_k, full_v) = cache.update_and_fetch(k_rope, v_i)?;
+
+                // Right-pad shorter caches to max_kv_len
+                let seq_len = full_k.shape()[2];
+                if seq_len < max_kv_len {
+                    let pad_len = max_kv_len - seq_len;
+                    let pad_k = ops::zeros_dtype(
+                        &[1, n_kv_heads, pad_len, head_dim],
+                        full_k.dtype(),
+                    )?;
+                    let pad_v = ops::zeros_dtype(
+                        &[1, n_kv_heads, pad_len, head_dim],
+                        full_v.dtype(),
+                    )?;
+                    all_keys.push(ops::concatenate_axis(&[&full_k, &pad_k], 2)?);
+                    all_values.push(ops::concatenate_axis(&[&full_v, &pad_v], 2)?);
+                } else {
+                    all_keys.push(full_k);
+                    all_values.push(full_v);
+                }
+                all_queries.push(q_rope);
+            }
+
+            // --- Batched: stack + SDPA + output proj + MLP ---
+            let stacked_q =
+                ops::concatenate_axis(&all_queries.iter().collect::<Vec<_>>(), 0)?;
+            let stacked_k =
+                ops::concatenate_axis(&all_keys.iter().collect::<Vec<_>>(), 0)?;
+            let stacked_v =
+                ops::concatenate_axis(&all_values.iter().collect::<Vec<_>>(), 0)?;
+
+            let mask = create_batched_decode_mask(&kv_lengths, max_kv_len)?;
+
+            let attn_out = scaled_dot_product_attention(
+                stacked_q,
+                stacked_k,
+                stacked_v,
+                scale,
+                Some(&mask),
+            )?;
+
+            let attn_flat = attn_out
+                .transpose_axes(&[0, 2, 1, 3])?
+                .reshape(&[n, 1, -1])?;
+            let residual = layer.self_attn.o_proj.forward(&attn_flat)?;
+            h = h.add(residual)?;
+
+            let normed_post = layer.post_attention_layernorm.forward(&h)?;
+            let mlp_out = layer.mlp.forward(&normed_post)?;
+            h = h.add(mlp_out)?;
         }
 
         let out = self.model.norm.forward(&h)?;

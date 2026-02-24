@@ -543,7 +543,14 @@ fn build_constraint(
 
             let constraint = if fmt.r#type == "json_schema" {
                 if let Some(ref schema) = fmt.json_schema {
-                    let schema_str = schema.to_string();
+                    // OpenAI spec wraps the actual schema under a `schema` key:
+                    // {"name": "...", "schema": {<actual schema>}}
+                    // Fall back to the whole value for bare schemas.
+                    let inner = schema
+                        .get("schema")
+                        .cloned()
+                        .unwrap_or_else(|| schema.clone());
+                    let schema_str = inner.to_string();
                     mlx_engine::constrained::ConstrainedGenerator::from_json_schema(
                         &schema_str,
                         &vocab,

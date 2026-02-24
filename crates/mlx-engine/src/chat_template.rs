@@ -31,12 +31,22 @@ impl ChatTemplateRenderer {
 
     /// Load template from a model directory (`chat_template.jinja` or `tokenizer_config.json`).
     pub fn from_model_dir(model_dir: &std::path::Path) -> Result<Self, EngineError> {
+        Self::try_from_model_dir(model_dir)?.ok_or_else(|| {
+            EngineError::Template("No chat template found in model directory".to_owned())
+        })
+    }
+
+    /// Like [`from_model_dir`] but returns `Ok(None)` when no template is present,
+    /// rather than an error. Parse/IO failures still propagate as `Err`.
+    pub fn try_from_model_dir(
+        model_dir: &std::path::Path,
+    ) -> Result<Option<Self>, EngineError> {
         // Prefer standalone chat_template.jinja
         let jinja_path = model_dir.join("chat_template.jinja");
         if jinja_path.exists() {
             let template = std::fs::read_to_string(&jinja_path)
                 .map_err(|e| EngineError::Template(format!("Failed to read template: {e}")))?;
-            return Self::new(&template);
+            return Self::new(&template).map(Some);
         }
 
         // Fall back to tokenizer_config.json
@@ -49,7 +59,7 @@ impl ChatTemplateRenderer {
             if let Some(ct) = config.get("chat_template") {
                 // String template
                 if let Some(template) = ct.as_str() {
-                    return Self::new(template);
+                    return Self::new(template).map(Some);
                 }
                 // Array of {name, template} objects -- use "default" or first entry
                 if let Some(arr) = ct.as_array() {
@@ -60,16 +70,14 @@ impl ChatTemplateRenderer {
                         .and_then(|v| v.get("template"))
                         .and_then(|v| v.as_str());
                     if let Some(template) = found {
-                        return Self::new(template);
+                        return Self::new(template).map(Some);
                     }
                 }
                 tracing::warn!("chat_template field present but not a string or valid array");
             }
         }
 
-        Err(EngineError::Template(
-            "No chat template found in model directory".to_owned(),
-        ))
+        Ok(None)
     }
 
     /// Apply the chat template to messages, returning the formatted prompt string.

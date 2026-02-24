@@ -99,8 +99,13 @@ impl ConstrainedGenerator {
             return Ok(logits.clone());
         };
 
+        // Use the actual logits vocab dimension, not the tokenizer's count.
+        // Models often pad their embedding table beyond the tokenizer vocabulary.
+        let logit_vocab = *logits.shape().last().unwrap_or(&0) as usize;
+        let vocab_size = logit_vocab.max(self.vocab_size);
+
         // Build a mask: -inf for disallowed, 0 for allowed
-        let mut mask_vec = vec![f32::NEG_INFINITY; self.vocab_size];
+        let mut mask_vec = vec![f32::NEG_INFINITY; vocab_size];
         for &tid in &allowed {
             if let Some(slot) = mask_vec.get_mut(usize::try_from(tid).unwrap_or(usize::MAX)) {
                 *slot = 0.0;
@@ -108,7 +113,7 @@ impl ConstrainedGenerator {
         }
 
         let vocab_i32 =
-            i32::try_from(self.vocab_size).map_err(|_| Exception::custom("vocab_size overflow"))?;
+            i32::try_from(vocab_size).map_err(|_| Exception::custom("vocab_size overflow"))?;
         let mask_array = Array::from_slice(&mask_vec, &[vocab_i32]);
 
         // Reshape for broadcasting: [1, vocab_size] broadcasts across batch dim.
@@ -124,24 +129,126 @@ impl ConstrainedGenerator {
 
 /// Build an `outlines-core` [`Vocabulary`] from a `tokenizers` tokenizer.
 ///
-/// Maps each token string to its ID. The tokenizer's vocabulary is typically
-/// the full set of BPE/Unigram tokens.
+/// Replicates the token processing that outlines-core's `TokenProcessor` does internally:
+/// - ByteLevel tokenizers (GPT-2, Llama 3): each character is decoded via a CHAR_MAP
+///   that maps Unicode surrogates (U+0100–U+017E, U+00A1–U+00FF) back to the raw byte
+///   they represent.
+/// - ByteFallback tokenizers (Llama 2): `▁` → space, `<0x__>` → single byte.
+/// - Others: pass UTF-8 bytes as-is.
 pub fn build_vocabulary(
     tokenizer: &tokenizers::Tokenizer,
     eos_token_id: u32,
 ) -> Result<Vocabulary, EngineError> {
+    use tokenizers::DecoderWrapper;
+
+    let processor = match tokenizer.get_decoder() {
+        Some(DecoderWrapper::ByteLevel(_)) => TokenKind::Byte,
+        Some(DecoderWrapper::Sequence(seq)) => {
+            let has_byte_fallback = seq
+                .get_decoders()
+                .iter()
+                .any(|d| matches!(d, DecoderWrapper::ByteFallback(_)));
+            let spacechar = seq
+                .get_decoders()
+                .iter()
+                .find_map(|d| {
+                    if let DecoderWrapper::Replace(r) = d {
+                        // Extract the replacement from the Replace decoder via JSON.
+                        let v = serde_json::to_value(r).ok()?;
+                        if v.get("content")?.as_str()? == " " {
+                            let pat = v.get("pattern")?.get("String")?.as_str()?;
+                            let mut chars = pat.chars();
+                            let first = chars.next()?;
+                            chars.next().is_none().then_some(first.to_string())
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_else(|| "▁".to_string());
+            if has_byte_fallback {
+                TokenKind::ByteFallback { spacechar }
+            } else {
+                TokenKind::Raw
+            }
+        }
+        _ => TokenKind::Raw,
+    };
+
     let mut vocab = Vocabulary::new(eos_token_id);
 
-    let token_map = tokenizer.get_vocab(true);
-    for (token_str, token_id) in &token_map {
-        let tid = *token_id;
-        if vocab.try_insert(token_str.as_str(), tid).is_err() {
-            tracing::trace!(token = %token_str, id = tid, "Skipping duplicate token");
+    // Added (special) tokens are inserted as-is since they represent literal strings.
+    for (id, added) in tokenizer.get_added_tokens_decoder() {
+        if !added.special && id != eos_token_id {
+            if vocab.try_insert(added.content.as_bytes().to_vec(), id).is_err() {
+                tracing::trace!(token = %added.content, id, "Skipping duplicate added token");
+            }
+        }
+    }
+
+    // Main vocabulary tokens require tokenizer-specific decoding.
+    for (token_str, token_id) in tokenizer.get_vocab(false) {
+        if token_id == eos_token_id {
+            continue;
+        }
+        let bytes = processor.process(&token_str);
+        if vocab.try_insert(bytes, token_id).is_err() {
+            tracing::trace!(token = %token_str, id = token_id, "Skipping duplicate token");
         }
     }
 
     Ok(vocab)
 }
+
+#[derive(Debug)]
+enum TokenKind {
+    /// GPT-2 / Llama 3 style: each char in the token string maps to a byte via CHAR_MAP.
+    Byte,
+    /// Llama 2 / SentencePiece style: replace spacechar with 0x20, handle `<0x__>`.
+    ByteFallback { spacechar: String },
+    /// No special decoding needed; use UTF-8 bytes directly.
+    Raw,
+}
+
+impl TokenKind {
+    fn process(&self, token: &str) -> Vec<u8> {
+        match self {
+            TokenKind::Byte => token
+                .chars()
+                .map(|c| *BYTE_CHAR_MAP.get(&c).unwrap_or(&(c as u8)))
+                .collect(),
+            TokenKind::ByteFallback { spacechar } => {
+                if token.len() == 6 && token.starts_with("<0x") && token.ends_with('>') {
+                    if let Ok(byte) = u8::from_str_radix(&token[3..5], 16) {
+                        return vec![byte];
+                    }
+                }
+                token.replace(spacechar.as_str(), " ").into_bytes()
+            }
+            TokenKind::Raw => token.as_bytes().to_vec(),
+        }
+    }
+}
+
+/// Maps Unicode surrogate characters used by ByteLevel tokenizers back to their
+/// raw byte values (the same table as outlines-core's `CHAR_MAP`).
+static BYTE_CHAR_MAP: std::sync::LazyLock<std::collections::HashMap<char, u8>> =
+    std::sync::LazyLock::new(|| {
+        let mut map = std::collections::HashMap::with_capacity(256);
+        let mut key = 0x100u32;
+        for byte in 0..=255u8 {
+            let ch = byte as char;
+            if matches!(ch, '!'..='~' | '\u{00A1}'..='\u{00AC}' | '\u{00AE}'..='\u{00FF}') {
+                map.insert(ch, byte);
+            } else if let Some(c) = char::from_u32(key) {
+                map.insert(c, byte);
+                key += 1;
+            }
+        }
+        map
+    });
 
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
