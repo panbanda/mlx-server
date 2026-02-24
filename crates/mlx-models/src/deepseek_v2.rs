@@ -520,8 +520,9 @@ impl SharedExperts {
 #[derive(Debug, Clone, ModuleParameters)]
 struct DeepSeekV2MlpBlock {
     // MoE fields
+    // The router gate is a plain float16 linear (never quantized in mlx-community checkpoints).
     #[param]
-    gate: Option<QLinear>,
+    gate: Option<nn::Linear>,
     #[param]
     switch_mlp: Option<SwitchMlpWeights>,
     #[param]
@@ -554,7 +555,11 @@ impl DeepSeekV2MlpBlock {
         };
 
         Ok(Self {
-            gate: Some(QLinear::new(ql, qb)?),
+            gate: Some(
+                nn::LinearBuilder::new(args.hidden_size, n_routed)
+                    .bias(false)
+                    .build()?,
+            ),
             switch_mlp: Some(SwitchMlpWeights::new(ql, qb)?),
             shared_experts: shared,
             gate_proj: None,
@@ -583,7 +588,7 @@ impl DeepSeekV2MlpBlock {
         })
     }
 
-    fn forward(&self, x: &Array) -> Result<Array, Exception> {
+    fn forward(&mut self, x: &Array) -> Result<Array, Exception> {
         if self.is_moe {
             self.forward_moe(x)
         } else {
@@ -591,18 +596,16 @@ impl DeepSeekV2MlpBlock {
         }
     }
 
-    fn forward_moe(&self, x: &Array) -> Result<Array, Exception> {
-        let router = self
-            .gate
-            .as_ref()
-            .ok_or_else(|| Exception::custom("MoE router gate missing"))?;
-        let experts = self
-            .switch_mlp
-            .as_ref()
-            .ok_or_else(|| Exception::custom("MoE switch_mlp missing"))?;
+    fn forward_moe(&mut self, x: &Array) -> Result<Array, Exception> {
+        // Borrow each sub-module in its own scope to avoid simultaneous mutable borrows.
 
         // Softmax routing (V2 style)
-        let gates = ops::softmax_axis(&router.forward(x)?, -1, true)?;
+        let gates_raw = self
+            .gate
+            .as_mut()
+            .ok_or_else(|| Exception::custom("MoE router gate missing"))?
+            .forward(x)?;
+        let gates = ops::softmax_axis(&gates_raw, -1, true)?;
 
         // Top-k selection
         let neg_k = -self.top_k;
@@ -619,14 +622,19 @@ impl DeepSeekV2MlpBlock {
         };
 
         // Expert computation
-        let y = experts.forward_gather(x, &top_inds, false)?;
+        let y = self
+            .switch_mlp
+            .as_ref()
+            .ok_or_else(|| Exception::custom("MoE switch_mlp missing"))?
+            .forward_gather(x, &top_inds, false)?;
         let mut result = y
             .multiply(&scaled_scores.expand_dims(-1)?)?
             .sum_axes(&[-2], false)?;
 
         // Add shared experts
         if let Some(ref shared) = self.shared_experts {
-            result = result.add(shared.forward(x)?)?;
+            let shared_out = shared.forward(x)?;
+            result = result.add(shared_out)?;
         }
 
         Ok(result)

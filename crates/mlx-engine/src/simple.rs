@@ -55,7 +55,7 @@ pub struct SimpleEngine {
     model: Mutex<AnyModel>,
     prefix_cache: Mutex<PrefixCache>,
     tokenizer: Tokenizer,
-    template: ChatTemplateRenderer,
+    template: Option<ChatTemplateRenderer>,
     model_name: String,
     eos_token_ids: Vec<u32>,
 }
@@ -79,7 +79,10 @@ impl SimpleEngine {
 
         let model = model_loader::load_model(model_dir)?;
         let tokenizer = model_loader::load_tokenizer(model_dir)?;
-        let template = ChatTemplateRenderer::from_model_dir(model_dir)?;
+        let template = ChatTemplateRenderer::try_from_model_dir(model_dir)?;
+        if template.is_none() {
+            tracing::warn!("No chat template found; /v1/chat/completions will be unavailable");
+        }
 
         let eos_token_ids = extract_eos_tokens(model_dir);
 
@@ -122,7 +125,12 @@ impl SimpleEngine {
         messages: &[ChatMessage],
         tools: Option<&[serde_json::Value]>,
     ) -> Result<Vec<u32>, EngineError> {
-        let prompt = self.template.apply(messages, tools, true)?;
+        let renderer = self.template.as_ref().ok_or_else(|| {
+            EngineError::Template(
+                "This model has no chat template; use /v1/completions instead".to_owned(),
+            )
+        })?;
+        let prompt = renderer.apply(messages, tools, true)?;
         let encoding = self
             .tokenizer
             .encode(prompt.as_str(), false)
@@ -234,6 +242,7 @@ impl SimpleEngine {
         prepared: &mut PreparedGeneration<'_>,
         params: &SamplingParams,
         logprob_top_n: Option<u32>,
+        constraint: Option<&crate::constrained::ConstrainedGenerator>,
     ) -> Result<(Array, Option<LogprobArrays>), EngineError> {
         let logits = if let Some(ref pixel_values) = prepared.pixel_values {
             prepared
@@ -247,13 +256,20 @@ impl SimpleEngine {
                 .map_err(EngineError::Mlx)?
         };
         let last_logits = logits.index((.., -1, ..));
-        let current_token = sample(&last_logits, params).map_err(EngineError::Mlx)?;
+
+        let constrained_logits = if let Some(cg) = constraint {
+            cg.apply_mask(&last_logits).map_err(EngineError::Mlx)?
+        } else {
+            last_logits
+        };
+
+        let current_token = sample(&constrained_logits, params).map_err(EngineError::Mlx)?;
 
         let logprob_data = if let Some(top_n) = logprob_top_n {
             let scaled = if params.temperature <= f32::EPSILON {
-                last_logits
+                constrained_logits
             } else {
-                last_logits
+                constrained_logits
                     .multiply(Array::from_f32(1.0 / params.temperature))
                     .map_err(EngineError::Mlx)?
             };
@@ -467,11 +483,20 @@ impl SimpleEngine {
 
         let mut prepared = self.prepare_generation(prompt_tokens, pixel_values)?;
         let prompt_len = prepared.prompt_len;
-        let (current_token, first_logprob_data) =
-            self.run_prefill(prompt_tokens, &mut prepared, params, logprob_top_n)?;
+        let (current_token, first_logprob_data) = self.run_prefill(
+            prompt_tokens,
+            &mut prepared,
+            params,
+            logprob_top_n,
+            constraint.as_ref(),
+        )?;
 
         // Capture T1 (already eval'd inside run_prefill).
         let first_token_id: u32 = current_token.item();
+        // Advance the constraint past the first sampled token before decode.
+        if let Some(ref mut cg) = constraint {
+            cg.advance(first_token_id);
+        }
         let mut tokens: Vec<u32> = vec![first_token_id];
         let mut all_logprobs: Option<Vec<mlx_models::TokenLogprobInfo>> = logprobs.then(Vec::new);
         if let (Some(all_lp), Some(lp_data)) = (&mut all_logprobs, &first_logprob_data) {
@@ -512,6 +537,9 @@ impl SimpleEngine {
         }
 
         // Pipelined decode: build step N+2's graph while GPU computes step N+1.
+        // When constrained generation is active, pipelining would apply the FSM mask
+        // one step behind (since we need the sampled token value to advance the FSM
+        // before constraining the next step). Fall back to sequential decode instead.
         let (mut next_token, mut next_logprob_data) = Self::decode_step(
             &current_token,
             &mut prepared.model,
@@ -526,7 +554,11 @@ impl SimpleEngine {
             if let Some(ref lp) = next_logprob_data {
                 eval_targets.extend(lp.eval_targets());
             }
-            async_eval(eval_targets).map_err(EngineError::Mlx)?;
+            if constraint.is_some() {
+                eval(eval_targets).map_err(EngineError::Mlx)?;
+            } else {
+                async_eval(eval_targets).map_err(EngineError::Mlx)?;
+            }
         }
 
         let mut total_forward_ns: u128 = 0;
@@ -537,6 +569,18 @@ impl SimpleEngine {
 
         loop {
             let t0 = std::time::Instant::now();
+
+            // When constrained, extract the sampled token and advance the FSM
+            // before building the next step, so the mask is always applied at the
+            // correct FSM state.
+            let constrained_token_id: Option<u32> = constraint.is_some().then(|| {
+                let id: u32 = next_token.item();
+                if let Some(ref mut cg) = constraint {
+                    cg.advance(id);
+                }
+                id
+            });
+
             let (following, following_logprob_data) = Self::decode_step(
                 &next_token,
                 &mut prepared.model,
@@ -552,16 +596,16 @@ impl SimpleEngine {
                 if let Some(ref lp) = following_logprob_data {
                     eval_targets.extend(lp.eval_targets());
                 }
-                async_eval(eval_targets).map_err(EngineError::Mlx)?;
+                if constraint.is_some() {
+                    eval(eval_targets).map_err(EngineError::Mlx)?;
+                } else {
+                    async_eval(eval_targets).map_err(EngineError::Mlx)?;
+                }
             }
             let t2 = std::time::Instant::now();
 
-            let token_id: u32 = next_token.item();
-
-            // Advance constrained generator state
-            if let Some(ref mut cg) = constraint {
-                cg.advance(token_id);
-            }
+            // In the unconstrained pipeline, extract the token here (after building following).
+            let token_id: u32 = constrained_token_id.unwrap_or_else(|| next_token.item());
 
             // Materialize logprobs for the token we just extracted
             if let (Some(all_lp), Some(lp_data)) = (&mut all_logprobs, &next_logprob_data) {
@@ -757,11 +801,20 @@ impl SimpleEngine {
 
         let mut prepared = self.prepare_generation(prompt_tokens, pixel_values)?;
         let prompt_len = prepared.prompt_len;
-        let (current_token, first_logprob_data) =
-            self.run_prefill(prompt_tokens, &mut prepared, params, logprob_top_n)?;
+        let (current_token, first_logprob_data) = self.run_prefill(
+            prompt_tokens,
+            &mut prepared,
+            params,
+            logprob_top_n,
+            constraint.as_ref(),
+        )?;
 
         let mut all_tokens: Vec<u32> = Vec::new();
         let first_token_id: u32 = current_token.item();
+        // Advance the constraint past the first sampled token before decode.
+        if let Some(ref mut cg) = constraint {
+            cg.advance(first_token_id);
+        }
         all_tokens.push(first_token_id);
 
         let first_decoded = self.decode_tokens(&all_tokens)?;

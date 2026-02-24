@@ -40,6 +40,11 @@ const fn default_sliding_window_pattern() -> i32 {
     2
 }
 
+// Gemma 2 uses tied word embeddings by default (no separate lm_head weight).
+const fn default_tie_word_embeddings() -> bool {
+    true
+}
+
 /// Quantization parameters from config.json.
 #[derive(Debug, Clone, Deserialize)]
 pub struct QuantizationConfig {
@@ -62,7 +67,7 @@ pub struct Gemma2ModelArgs {
     pub max_position_embeddings: i32,
     #[serde(default = "default_rope_theta")]
     pub rope_theta: f32,
-    #[serde(default)]
+    #[serde(default = "default_tie_word_embeddings")]
     pub tie_word_embeddings: bool,
     #[serde(default)]
     pub attention_bias: bool,
@@ -954,5 +959,6 @@ mod tests {
         assert!(args.quantization.is_none());
         assert_eq!(args.sliding_window_pattern, 2);
         assert!((args.rope_theta - 10000.0).abs() < f32::EPSILON);
+        assert!(args.tie_word_embeddings); // Gemma 2 default: tied embeddings
     }
 }

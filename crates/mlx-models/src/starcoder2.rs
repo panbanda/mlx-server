@@ -395,7 +395,8 @@ where
 
 #[derive(Debug, Clone, ModuleParameters, Quantizable)]
 struct Starcoder2Model {
-    #[quantizable]
+    // Not marked #[quantizable]: starcoder2 safetensors stores embed_tokens as float16
+    // (not uint32), so we keep it unquantized and let it load via direct key match.
     #[param]
     embed_tokens: MaybeQuantized<nn::Embedding>,
     #[quantizable]

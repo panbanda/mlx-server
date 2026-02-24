@@ -159,6 +159,46 @@ impl AnyModel {
         }
     }
 
+    /// Batched decode forward pass for N requests each with 1 token.
+    ///
+    /// Only supported for the `Transformer` variant (Llama/Qwen/Mistral).
+    pub fn forward_batched(
+        &mut self,
+        inputs: &Array,
+        caches: &mut [&mut AnyCache],
+    ) -> Result<Array, Exception> {
+        let mut kv_refs: Vec<&mut Vec<Option<cache::SteppingKeyValueCache>>> =
+            Vec::with_capacity(caches.len());
+        for cache in caches.iter_mut() {
+            match cache {
+                AnyCache::KV(kv) => kv_refs.push(kv),
+                AnyCache::Hybrid(_) => {
+                    return Err(Exception::custom(
+                        "Batched forward not supported for Hybrid cache",
+                    ));
+                }
+            }
+        }
+
+        match self {
+            Self::Transformer(m) => m.forward_batched(inputs, &mut kv_refs),
+            Self::Qwen3Moe(_)
+            | Self::Qwen3Next(_)
+            | Self::Gemma2(_)
+            | Self::Phi3(_)
+            | Self::Starcoder2(_)
+            | Self::LlavaQwen2(_)
+            | Self::DeepSeekV2(_) => Err(Exception::custom(
+                "Batched forward only supported for Transformer models",
+            )),
+        }
+    }
+
+    /// Whether this model supports batched decode.
+    pub const fn supports_batched_decode(&self) -> bool {
+        matches!(self, Self::Transformer(_))
+    }
+
     /// The model's hidden dimension.
     pub const fn hidden_size(&self) -> i32 {
         match self {
@@ -461,10 +501,12 @@ impl LogprobArrays {
 
         let log_probs = mlx_rs::nn::log_softmax(scaled_logits, -1)?;
 
-        // Logprob of the chosen token
+        // Logprob of the chosen token — cast to f32 so materialize can use as_slice::<f32>
+        // regardless of the model's compute dtype.
         let chosen_lp = log_probs
             .take_along_axis(&sampled_token.reshape(&[-1, 1])?, -1)?
-            .squeeze_axes(&[-1])?;
+            .squeeze_axes(&[-1])?
+            .as_dtype(mlx_rs::Dtype::Float32)?;
 
         // Top-N logprobs
         let (top_indices, top_values) = if let Some(n) = top_n {
@@ -475,7 +517,9 @@ impl LogprobArrays {
             let neg = log_probs.negative()?;
             let sorted_idx = argsort_axis(&neg, -1)?;
             let top_idx = sorted_idx.index((.., ..clamped));
-            let top_vals = log_probs.take_along_axis(&top_idx, -1)?;
+            let top_vals = log_probs
+                .take_along_axis(&top_idx, -1)?
+                .as_dtype(mlx_rs::Dtype::Float32)?;
             (Some(top_idx), Some(top_vals))
         } else {
             (None, None)
@@ -506,12 +550,12 @@ impl LogprobArrays {
 
         let top_logprobs = match (&self.top_indices, &self.top_values) {
             (Some(indices), Some(values)) => {
-                let ids = indices.as_slice::<i32>();
+                let ids = indices.as_slice::<u32>();
                 let vals = values.as_slice::<f32>();
                 ids.iter()
                     .zip(vals.iter())
                     .map(|(&id, &lp)| TopLogprobEntry {
-                        token_id: id.cast_unsigned(),
+                        token_id: id,
                         logprob: lp,
                     })
                     .collect()
@@ -663,9 +707,14 @@ fn collect_safetensors_files(model_path: &Path) -> Result<Vec<std::path::PathBuf
 /// QuantizedLinear/QuantizedEmbedding nest them as `layer.inner.weight`.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn remap_quantized_key(key: &str) -> Option<String> {
+    // MaybeQuantized<nn::Linear> (used in gemma2, etc.) nests quantized params under `.inner.*`.
     if let Some(prefix) = key.strip_suffix(".weight") {
         Some(format!("{prefix}.inner.weight"))
-    } else if key.ends_with(".bias") && !key.ends_with(".biases") {
+    } else if let Some(prefix) = key.strip_suffix(".scales") {
+        Some(format!("{prefix}.inner.scales"))
+    } else if let Some(prefix) = key.strip_suffix(".biases") {
+        Some(format!("{prefix}.inner.biases"))
+    } else if key.ends_with(".bias") {
         let prefix = key.strip_suffix(".bias")?;
         Some(format!("{prefix}.inner.bias"))
     } else {
@@ -735,19 +784,19 @@ mod tests {
     }
 
     #[test]
-    fn remap_quantized_key_biases_not_remapped() {
-        // ".biases" is a quantization parameter, not a layer bias -- don't remap
+    fn remap_quantized_key_biases() {
+        // ".biases" (quantization bias) remaps to ".inner.biases" for MaybeQuantized layers
         assert_eq!(
             remap_quantized_key("model.layers.0.self_attn.q_proj.biases"),
-            None
+            Some("model.layers.0.self_attn.q_proj.inner.biases".to_owned())
         );
     }
 
     #[test]
-    fn remap_quantized_key_scales_not_remapped() {
+    fn remap_quantized_key_scales() {
         assert_eq!(
             remap_quantized_key("model.layers.0.self_attn.q_proj.scales"),
-            None
+            Some("model.layers.0.self_attn.q_proj.inner.scales".to_owned())
         );
     }
 
