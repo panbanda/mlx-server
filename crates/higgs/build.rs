@@ -30,39 +30,44 @@ fn copy_metallib() -> Result<(), &'static str> {
         return Err("could not read build dir");
     };
 
-    for entry in entries.flatten() {
-        let entry_name = entry.file_name();
-        let is_mlx_sys = entry_name
-            .to_str()
-            .is_some_and(|s| s.starts_with("mlx-sys-"));
-        if !is_mlx_sys {
-            continue;
-        }
+    // Collect candidates and pick the most recently modified, since read_dir
+    // iteration order is unspecified and stale build dirs may linger.
+    let mut candidates: Vec<PathBuf> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let is_mlx_sys = entry
+                .file_name()
+                .to_str()
+                .is_some_and(|s| s.starts_with("mlx-sys-"));
+            if !is_mlx_sys {
+                return None;
+            }
+            let metallib = entry.path().join("out/build/lib/mlx.metallib");
+            metallib.exists().then_some(metallib)
+        })
+        .collect();
 
-        let metallib = entry.path().join("out/build/lib/mlx.metallib");
-        if !metallib.exists() {
-            continue;
-        }
+    candidates.sort_by_key(|p| fs::metadata(p).and_then(|m| m.modified()).ok());
+    let Some(metallib) = candidates.pop() else {
+        return Err("mlx.metallib not found in mlx-sys build output");
+    };
 
-        println!("cargo:rerun-if-changed={}", metallib.display());
+    println!("cargo:rerun-if-changed={}", metallib.display());
 
-        // Copy to target profile dir (e.g. target/release/) so the binary finds it via dladdr
-        let Some(profile_dir) = out_dir.ancestors().nth(3) else {
-            continue;
-        };
-        let dst = profile_dir.join("mlx.metallib");
-        if let Err(err) = fs::copy(&metallib, &dst) {
-            println!(
-                "cargo:warning=failed to copy {} to {}: {}",
-                metallib.display(),
-                dst.display(),
-                err
-            );
-            return Err("copy failed (see warning above)");
-        }
-        println!("cargo:warning=Copied mlx.metallib to {}", dst.display());
-        return Ok(());
+    // Copy to target profile dir (e.g. target/release/) so the binary finds it via dladdr
+    let Some(profile_dir) = out_dir.ancestors().nth(3) else {
+        return Err("could not derive target profile dir from OUT_DIR");
+    };
+    let dst = profile_dir.join("mlx.metallib");
+    if let Err(err) = fs::copy(&metallib, &dst) {
+        println!(
+            "cargo:warning=failed to copy {} to {}: {}",
+            metallib.display(),
+            dst.display(),
+            err
+        );
+        return Err("copy failed (see warning above)");
     }
-
-    Err("mlx.metallib not found in mlx-sys build output")
+    println!("cargo:warning=Copied mlx.metallib to {}", dst.display());
+    Ok(())
 }
