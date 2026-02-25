@@ -344,3 +344,148 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
     draw_token_usage(frame, chunks[2], &snap);
     draw_live_log(frame, chunks[3], &snap, scroll);
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    use chrono::Utc;
+
+    use crate::metrics::{MetricsStore, RequestRecord, RoutingMethod};
+
+    fn sample_record() -> RequestRecord {
+        RequestRecord {
+            id: 0,
+            timestamp: Instant::now(),
+            wallclock: Utc::now(),
+            model: "claude-opus-4-6".to_owned(),
+            provider: "anthropic".to_owned(),
+            routing_method: RoutingMethod::Default,
+            status: 200,
+            duration: Duration::from_millis(500),
+            input_tokens: 100,
+            output_tokens: 200,
+            error_body: None,
+        }
+    }
+
+    #[test]
+    fn status_label_known_codes() {
+        assert_eq!(status_label(200), Some("200 OK"));
+        assert_eq!(status_label(429), Some("429 Rate Limited"));
+        assert_eq!(status_label(500), Some("500 Internal Error"));
+        assert_eq!(status_label(502), Some("502 Bad Gateway"));
+    }
+
+    #[test]
+    fn status_label_unknown_code() {
+        assert_eq!(status_label(418), None);
+        assert_eq!(status_label(999), None);
+    }
+
+    #[test]
+    fn status_color_ranges() {
+        assert_eq!(status_color(200), Color::Green);
+        assert_eq!(status_color(299), Color::Green);
+        assert_eq!(status_color(400), Color::Yellow);
+        assert_eq!(status_color(429), Color::Yellow);
+        assert_eq!(status_color(500), Color::Red);
+        assert_eq!(status_color(502), Color::Red);
+    }
+
+    #[test]
+    fn duration_style_below_p50() {
+        let p50 = Duration::from_millis(500);
+        let p95 = Duration::from_secs(1);
+        let p99 = Duration::from_secs(2);
+        let style = duration_style(Duration::from_millis(100), p50, p95, p99);
+        assert_eq!(style, Style::default().fg(Color::DarkGray));
+    }
+
+    #[test]
+    fn duration_style_at_p50() {
+        let p50 = Duration::from_millis(500);
+        let p95 = Duration::from_secs(1);
+        let p99 = Duration::from_secs(2);
+        let style = duration_style(Duration::from_millis(700), p50, p95, p99);
+        assert_eq!(style, Style::default().fg(Color::White));
+    }
+
+    #[test]
+    fn duration_style_at_p95() {
+        let p50 = Duration::from_millis(500);
+        let p95 = Duration::from_secs(1);
+        let p99 = Duration::from_secs(2);
+        let style = duration_style(Duration::from_millis(1500), p50, p95, p99);
+        assert_eq!(style, Style::default().fg(Color::Yellow));
+    }
+
+    #[test]
+    fn duration_style_at_p99() {
+        let p50 = Duration::from_millis(500);
+        let p95 = Duration::from_secs(1);
+        let p99 = Duration::from_secs(2);
+        let style = duration_style(Duration::from_secs(3), p50, p95, p99);
+        assert_eq!(style, Style::default().fg(Color::Red));
+    }
+
+    #[test]
+    fn time_axis_labels_count() {
+        let labels = time_axis_labels(60);
+        assert_eq!(labels.len(), 5);
+        assert_eq!(labels.last().unwrap(), "now");
+        assert_eq!(labels.first().unwrap(), "-60m");
+    }
+
+    #[test]
+    fn value_axis_labels_count() {
+        let labels = value_axis_labels(1000, 4);
+        assert_eq!(labels.len(), 5);
+        assert_eq!(labels[0], "0");
+    }
+
+    #[test]
+    fn draw_empty_metrics_no_panic() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn draw_with_records_contains_expected_text() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        metrics.record(sample_record());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            content.contains("Requests/min"),
+            "buffer should contain Requests/min"
+        );
+        assert!(
+            content.contains("Duration"),
+            "buffer should contain Duration"
+        );
+        assert!(
+            content.contains("Live Log"),
+            "buffer should contain Live Log"
+        );
+    }
+}

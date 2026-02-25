@@ -88,7 +88,6 @@ impl MetricsStore {
         let idx = records.len();
         let id = record.id;
         records.push(record);
-        drop(records);
         self.id_index
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -102,7 +101,6 @@ impl MetricsStore {
         let mut records = self.records.write().unwrap_or_else(PoisonError::into_inner);
         let idx = records.len();
         records.push(record);
-        drop(records);
         self.id_index
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -266,6 +264,7 @@ impl MetricsStore {
 #[allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn sample_record() -> RequestRecord {
         RequestRecord {
@@ -542,5 +541,41 @@ mod tests {
         store.record(rec);
         let snap = store.snapshot();
         assert_eq!(snap[0].routing_method, RoutingMethod::Higgs);
+    }
+
+    #[test]
+    fn concurrent_pending_finalize_and_eviction() {
+        let store = Arc::new(MetricsStore::new(Duration::from_secs(60)));
+        let iterations: u64 = 200;
+
+        let writer_store = Arc::clone(&store);
+        let writer = std::thread::spawn(move || {
+            for i in 0..iterations {
+                let mut rec = sample_record();
+                rec.output_tokens = 0;
+                let id = writer_store.record_pending(rec);
+                writer_store.finalize_stream(id, i + 1, Duration::from_millis(i + 1));
+            }
+        });
+
+        let evictor_store = Arc::clone(&store);
+        let evictor = std::thread::spawn(move || {
+            for _ in 0..iterations {
+                evictor_store.evict_expired();
+            }
+        });
+
+        writer.join().unwrap();
+        evictor.join().unwrap();
+
+        let snap = store.snapshot();
+        assert_eq!(snap.len(), usize::try_from(iterations).unwrap());
+        for record in &snap {
+            assert!(
+                record.output_tokens > 0,
+                "record {} was never finalized",
+                record.id
+            );
+        }
     }
 }

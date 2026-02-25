@@ -106,3 +106,78 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
     frame.render_widget(table, area);
     super::render_scrollbar(frame, area, total, scroll);
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    use chrono::Utc;
+
+    use crate::metrics::{RequestRecord, RoutingMethod};
+
+    fn sample_record() -> RequestRecord {
+        RequestRecord {
+            id: 0,
+            timestamp: Instant::now(),
+            wallclock: Utc::now(),
+            model: "claude-opus-4-6".to_owned(),
+            provider: "anthropic".to_owned(),
+            routing_method: RoutingMethod::Default,
+            status: 200,
+            duration: Duration::from_millis(500),
+            input_tokens: 100,
+            output_tokens: 200,
+            error_body: None,
+        }
+    }
+
+    #[test]
+    fn draw_empty_metrics_no_panic() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn draw_with_records_contains_model_name() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        metrics.record(sample_record());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            content.contains("claude-opus"),
+            "buffer should contain model name"
+        );
+    }
+
+    #[test]
+    fn model_table_groups_by_model() {
+        let mut records = Vec::new();
+        for _ in 0..3 {
+            records.push(sample_record());
+        }
+        let mut other = sample_record();
+        other.model = "gpt-4".to_owned();
+        records.push(other);
+        let (_, total) = model_table(&records, " Test ".to_owned(), 0);
+        assert_eq!(total, 2);
+    }
+}

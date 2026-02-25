@@ -532,16 +532,31 @@ pub fn anthropic_stream_to_openai(
         yield Ok(Event::default().data(role_chunk.to_string()));
 
         let mut reader = SseReader::new(upstream);
+        let mut tool_call_index: i64 = -1;
+        let mut in_tool_use = false;
+
         while let Some((event_type, data)) = reader.next_event().await {
             if let Ok(json) = serde_json::from_str::<serde_json::Value>(&data) {
                 match event_type.as_str() {
-                    "content_block_delta" => {
-                        let text = json
-                            .get("delta")
-                            .and_then(|d| d.get("text"))
+                    "content_block_start" => {
+                        let block_type = json
+                            .get("content_block")
+                            .and_then(|b| b.get("type"))
                             .and_then(|t| t.as_str())
                             .unwrap_or("");
-                        if !text.is_empty() {
+                        if block_type == "tool_use" {
+                            in_tool_use = true;
+                            tool_call_index += 1;
+                            let tool_id = json
+                                .get("content_block")
+                                .and_then(|b| b.get("id"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
+                            let tool_name = json
+                                .get("content_block")
+                                .and_then(|b| b.get("name"))
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
                             let chunk = serde_json::json!({
                                 "id": request_id,
                                 "object": "chat.completion.chunk",
@@ -549,12 +564,75 @@ pub fn anthropic_stream_to_openai(
                                 "model": model,
                                 "choices": [{
                                     "index": 0,
-                                    "delta": {"content": text},
+                                    "delta": {
+                                        "tool_calls": [{
+                                            "index": tool_call_index,
+                                            "id": tool_id,
+                                            "type": "function",
+                                            "function": {"name": tool_name, "arguments": ""},
+                                        }]
+                                    },
                                     "finish_reason": null,
                                 }]
                             });
                             yield Ok(Event::default().data(chunk.to_string()));
+                        } else {
+                            in_tool_use = false;
                         }
+                    }
+                    "content_block_delta" => {
+                        let delta = json.get("delta");
+                        let delta_type = delta
+                            .and_then(|d| d.get("type"))
+                            .and_then(|t| t.as_str())
+                            .unwrap_or("");
+                        if delta_type == "input_json_delta" && in_tool_use {
+                            let partial_json = delta
+                                .and_then(|d| d.get("partial_json"))
+                                .and_then(|p| p.as_str())
+                                .unwrap_or("");
+                            if !partial_json.is_empty() {
+                                let chunk = serde_json::json!({
+                                    "id": request_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {
+                                            "tool_calls": [{
+                                                "index": tool_call_index,
+                                                "function": {"arguments": partial_json},
+                                            }]
+                                        },
+                                        "finish_reason": null,
+                                    }]
+                                });
+                                yield Ok(Event::default().data(chunk.to_string()));
+                            }
+                        } else {
+                            let text = delta
+                                .and_then(|d| d.get("text"))
+                                .and_then(|t| t.as_str())
+                                .unwrap_or("");
+                            if !text.is_empty() {
+                                let chunk = serde_json::json!({
+                                    "id": request_id,
+                                    "object": "chat.completion.chunk",
+                                    "created": created,
+                                    "model": model,
+                                    "choices": [{
+                                        "index": 0,
+                                        "delta": {"content": text},
+                                        "finish_reason": null,
+                                    }]
+                                });
+                                yield Ok(Event::default().data(chunk.to_string()));
+                            }
+                        }
+                    }
+                    "content_block_stop" => {
+                        in_tool_use = false;
                     }
                     "message_delta" => {
                         let stop_reason = json
@@ -576,7 +654,7 @@ pub fn anthropic_stream_to_openai(
                         });
                         yield Ok(Event::default().data(chunk.to_string()));
                     }
-                    _ => {} // Skip other event types
+                    _ => {}
                 }
             }
         }
@@ -608,7 +686,7 @@ pub fn openai_stream_to_anthropic(
         });
         yield Ok(Event::default().event("message_start").data(start.to_string()));
 
-        // 2. content_block_start
+        // 2. content_block_start for text
         let block_start = serde_json::json!({
             "type": "content_block_start",
             "index": 0,
@@ -618,6 +696,11 @@ pub fn openai_stream_to_anthropic(
 
         let mut reader = SseReader::new(upstream);
         let mut final_stop_reason = None;
+        // Track which tool call indices we've already started (OpenAI index -> Anthropic block index)
+        let mut started_tools: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+        // Next Anthropic content block index (0 is text)
+        let mut next_block_index: u64 = 1;
+        let mut has_text = false;
 
         while let Some((_event_type, data)) = reader.next_event().await {
             if data == "[DONE]" {
@@ -635,12 +718,78 @@ pub fn openai_stream_to_anthropic(
                         .and_then(|c| c.as_str())
                     {
                         if !text.is_empty() {
+                            has_text = true;
                             let delta = serde_json::json!({
                                 "type": "content_block_delta",
                                 "index": 0,
                                 "delta": {"type": "text_delta", "text": text},
                             });
                             yield Ok(Event::default().event("content_block_delta").data(delta.to_string()));
+                        }
+                    }
+
+                    // Handle tool_calls deltas
+                    if let Some(tool_calls) = chosen
+                        .get("delta")
+                        .and_then(|d| d.get("tool_calls"))
+                        .and_then(|tc| tc.as_array())
+                    {
+                        for tc in tool_calls {
+                            let tc_index = tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
+
+                            if !started_tools.contains_key(&tc_index) {
+                                // Close text block before first tool if we haven't emitted text
+                                if !has_text && next_block_index == 1 {
+                                    let block_stop = serde_json::json!({
+                                        "type": "content_block_stop",
+                                        "index": 0,
+                                    });
+                                    yield Ok(Event::default().event("content_block_stop").data(block_stop.to_string()));
+                                    has_text = true; // prevent double-close
+                                }
+
+                                let block_idx = next_block_index;
+                                next_block_index += 1;
+                                started_tools.insert(tc_index, block_idx);
+
+                                let tool_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("").to_owned();
+                                let tool_name = tc
+                                    .get("function")
+                                    .and_then(|f| f.get("name"))
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("")
+                                    .to_owned();
+
+                                let tool_start = serde_json::json!({
+                                    "type": "content_block_start",
+                                    "index": block_idx,
+                                    "content_block": {
+                                        "type": "tool_use",
+                                        "id": tool_id,
+                                        "name": tool_name,
+                                        "input": {},
+                                    },
+                                });
+                                yield Ok(Event::default().event("content_block_start").data(tool_start.to_string()));
+                            }
+
+                            // Emit argument deltas
+                            if let Some(args) = tc
+                                .get("function")
+                                .and_then(|f| f.get("arguments"))
+                                .and_then(|a| a.as_str())
+                            {
+                                if !args.is_empty() {
+                                    if let Some(&block_idx) = started_tools.get(&tc_index) {
+                                        let delta = serde_json::json!({
+                                            "type": "content_block_delta",
+                                            "index": block_idx,
+                                            "delta": {"type": "input_json_delta", "partial_json": args},
+                                        });
+                                        yield Ok(Event::default().event("content_block_delta").data(delta.to_string()));
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -654,14 +803,23 @@ pub fn openai_stream_to_anthropic(
             }
         }
 
-        // 4. content_block_stop
+        // Close text block (index 0)
         let block_stop = serde_json::json!({
             "type": "content_block_stop",
             "index": 0,
         });
         yield Ok(Event::default().event("content_block_stop").data(block_stop.to_string()));
 
-        // 5. message_delta
+        // Close any open tool_use blocks
+        for block_idx in started_tools.values() {
+            let tool_stop = serde_json::json!({
+                "type": "content_block_stop",
+                "index": block_idx,
+            });
+            yield Ok(Event::default().event("content_block_stop").data(tool_stop.to_string()));
+        }
+
+        // message_delta
         let msg_delta = serde_json::json!({
             "type": "message_delta",
             "delta": {"stop_reason": final_stop_reason},
@@ -669,7 +827,7 @@ pub fn openai_stream_to_anthropic(
         });
         yield Ok(Event::default().event("message_delta").data(msg_delta.to_string()));
 
-        // 6. message_stop
+        // message_stop
         let msg_stop = serde_json::json!({"type": "message_stop"});
         yield Ok(Event::default().event("message_stop").data(msg_stop.to_string()));
     }

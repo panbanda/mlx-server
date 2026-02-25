@@ -127,7 +127,7 @@ pub async fn chat_completions(
                             model: request_model,
                             provider: provider_name.clone(),
                             routing_method: routing_method.into(),
-                            status: if result.is_ok() { 200 } else { 502 },
+                            status: result.as_ref().map_or(502, |resp| resp.status().as_u16()),
                             duration: start.elapsed(),
                             input_tokens: 0,
                             output_tokens: 0,
@@ -174,6 +174,7 @@ pub async fn chat_completions(
                             api_key.as_deref(),
                         )
                         .await?;
+                        let upstream_status = upstream.status().as_u16();
                         let resp_bytes = upstream.bytes().await.map_err(|e| {
                             ServerError::ProxyError(format!("Failed to read response: {e}"))
                         })?;
@@ -189,7 +190,7 @@ pub async fn chat_completions(
                                 model: request_model,
                                 provider: provider_name.clone(),
                                 routing_method: routing_method.into(),
-                                status: 200,
+                                status: upstream_status,
                                 duration: start.elapsed(),
                                 input_tokens: 0,
                                 output_tokens: 0,

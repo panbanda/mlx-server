@@ -14,6 +14,9 @@ use crate::metrics::MetricsStore;
 use crate::metrics_log::MetricsLogger;
 
 pub fn config_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("HIGGS_CONFIG_DIR") {
+        return PathBuf::from(dir);
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_owned());
     PathBuf::from(home).join(".config/higgs")
 }
@@ -384,5 +387,181 @@ pub async fn await_shutdown_signal() {
     tokio::select! {
         _ = async { if let Some(ref mut s) = sigint { s.recv().await } else { std::future::pending().await } } => {}
         _ = async { if let Some(ref mut s) = sigterm { s.recv().await } else { std::future::pending().await } } => {}
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used, unsafe_code)]
+mod tests {
+    use super::*;
+
+    fn with_temp_config_dir<F: FnOnce(&std::path::Path)>(f: F) {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HIGGS_CONFIG_DIR", dir.path());
+        }
+        f(dir.path());
+        unsafe {
+            std::env::remove_var("HIGGS_CONFIG_DIR");
+        }
+    }
+
+    #[test]
+    fn config_dir_respects_env_override() {
+        let dir = tempfile::tempdir().unwrap();
+        unsafe {
+            std::env::set_var("HIGGS_CONFIG_DIR", dir.path());
+        }
+        assert_eq!(config_dir(), dir.path());
+        unsafe {
+            std::env::remove_var("HIGGS_CONFIG_DIR");
+        }
+    }
+
+    #[test]
+    fn config_dir_falls_back_to_home() {
+        unsafe {
+            std::env::remove_var("HIGGS_CONFIG_DIR");
+        }
+        let path = config_dir();
+        assert!(path.to_string_lossy().ends_with(".config/higgs"));
+    }
+
+    #[test]
+    fn pid_path_suffix() {
+        with_temp_config_dir(|dir| {
+            assert_eq!(pid_path(), dir.join("higgs.pid"));
+        });
+    }
+
+    #[test]
+    fn log_path_suffix() {
+        with_temp_config_dir(|dir| {
+            assert_eq!(log_path(), dir.join("higgs.log"));
+        });
+    }
+
+    #[test]
+    fn read_pid_none_when_no_file() {
+        with_temp_config_dir(|_| {
+            assert!(read_pid().is_none());
+        });
+    }
+
+    #[test]
+    fn read_pid_returns_valid_pid() {
+        with_temp_config_dir(|dir| {
+            std::fs::write(dir.join("higgs.pid"), "12345").unwrap();
+            assert_eq!(read_pid(), Some(12345));
+        });
+    }
+
+    #[test]
+    fn read_pid_none_for_non_numeric() {
+        with_temp_config_dir(|dir| {
+            std::fs::write(dir.join("higgs.pid"), "not-a-number").unwrap();
+            assert!(read_pid().is_none());
+        });
+    }
+
+    #[test]
+    fn write_and_read_pid_file() {
+        with_temp_config_dir(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            write_pid_file();
+            let pid = read_pid().unwrap();
+            assert_eq!(pid, i32::try_from(std::process::id()).unwrap());
+        });
+    }
+
+    #[test]
+    fn remove_pid_file_removes_file() {
+        with_temp_config_dir(|dir| {
+            let path = dir.join("higgs.pid");
+            std::fs::write(&path, "12345").unwrap();
+            assert!(path.exists());
+            remove_pid_file();
+            assert!(!path.exists());
+        });
+    }
+
+    #[test]
+    fn remove_pid_file_noop_when_missing() {
+        with_temp_config_dir(|_| {
+            remove_pid_file();
+        });
+    }
+
+    #[test]
+    fn pid_is_alive_for_own_process() {
+        let pid = i32::try_from(std::process::id()).unwrap();
+        assert!(pid_is_alive(pid));
+    }
+
+    #[test]
+    fn pid_is_alive_false_for_nonexistent() {
+        assert!(!pid_is_alive(99_999_999));
+    }
+
+    #[test]
+    fn retention_duration_uses_configured_minutes() {
+        let config = HiggsConfig {
+            retention: crate::config::RetentionConfig {
+                enabled: true,
+                minutes: 30,
+            },
+            ..HiggsConfig::default()
+        };
+        assert_eq!(retention_duration(&config), Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn retention_duration_one_year_when_disabled() {
+        let config = HiggsConfig {
+            retention: crate::config::RetentionConfig {
+                enabled: false,
+                minutes: 30,
+            },
+            ..HiggsConfig::default()
+        };
+        assert_eq!(
+            retention_duration(&config),
+            Duration::from_secs(365 * 24 * 60 * 60)
+        );
+    }
+
+    #[test]
+    fn create_metrics_without_logger() {
+        let config = HiggsConfig {
+            logging: crate::config::LoggingConfig {
+                metrics: crate::config::MetricsLogConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+            },
+            ..HiggsConfig::default()
+        };
+        let store = create_metrics(&config);
+        assert_eq!(store.window(), retention_duration(&config));
+    }
+
+    #[test]
+    fn cmd_init_creates_config_file() {
+        with_temp_config_dir(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            cmd_init();
+            assert!(dir.join("config.toml").exists());
+        });
+    }
+
+    #[test]
+    fn cmd_init_noop_when_config_exists() {
+        with_temp_config_dir(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            let path = dir.join("config.toml");
+            std::fs::write(&path, "existing content").unwrap();
+            cmd_init();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing content");
+        });
     }
 }

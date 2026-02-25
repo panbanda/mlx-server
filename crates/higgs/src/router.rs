@@ -89,7 +89,6 @@ pub struct Router {
     auto_routes: Vec<AutoRouteEntry>,
     auto_candidates: Vec<RouteCandidate>,
     auto_router_engine: Option<Arc<Engine>>,
-    #[allow(dead_code)]
     auto_router_timeout_ms: u64,
     default_target: RouteTarget,
 }
@@ -236,11 +235,21 @@ impl Router {
         let candidates = self.auto_candidates.clone();
         let messages_owned = msg_slice.to_vec();
 
-        let name = tokio::task::spawn_blocking(move || {
-            crate::auto_router::classify_local(&engine_clone, &candidates, &messages_owned)
-        })
+        let timeout = std::time::Duration::from_millis(self.auto_router_timeout_ms);
+        let name = match tokio::time::timeout(
+            timeout,
+            tokio::task::spawn_blocking(move || {
+                crate::auto_router::classify_local(&engine_clone, &candidates, &messages_owned)
+            }),
+        )
         .await
-        .ok()??;
+        {
+            Ok(join_result) => join_result.ok()??,
+            Err(_) => {
+                warn!("auto-router classification timed out after {timeout:?}");
+                return None;
+            }
+        };
 
         let entry = self.auto_routes.iter().find(|r| r.name == name)?;
         self.resolve_target(&entry.target, "auto", RoutingMethod::Auto)

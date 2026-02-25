@@ -60,3 +60,73 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
     frame.render_widget(table, area);
     super::render_scrollbar(frame, area, count, scroll);
 }
+
+#[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    use chrono::Utc;
+
+    use crate::metrics::{MetricsStore, RequestRecord, RoutingMethod};
+
+    fn sample_record() -> RequestRecord {
+        RequestRecord {
+            id: 0,
+            timestamp: Instant::now(),
+            wallclock: Utc::now(),
+            model: "claude-opus-4-6".to_owned(),
+            provider: "anthropic".to_owned(),
+            routing_method: RoutingMethod::Default,
+            status: 200,
+            duration: Duration::from_millis(500),
+            input_tokens: 100,
+            output_tokens: 200,
+            error_body: None,
+        }
+    }
+
+    #[test]
+    fn draw_no_errors() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        metrics.record(sample_record());
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(content.contains("Errors (0)"), "should show zero errors");
+    }
+
+    #[test]
+    fn draw_with_errors() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        let mut error_rec = sample_record();
+        error_rec.status = 500;
+        error_rec.error_body = Some("Internal server error".to_owned());
+        metrics.record(error_rec);
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(content.contains("Errors (1)"), "should show one error");
+    }
+}
