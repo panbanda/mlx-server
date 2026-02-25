@@ -184,11 +184,12 @@ impl MetricsStore {
             "output_tokens": record.output_tokens,
             "error": &record.error_body,
         });
-        if let Ok(line) = serde_json::to_string(&entry)
-            && let Ok(mut l) = logger.lock()
-            && let Err(e) = l.write_line(&line)
-        {
-            tracing::warn!("failed to write metrics log: {e}");
+        if let Ok(line) = serde_json::to_string(&entry) {
+            if let Ok(mut l) = logger.lock() {
+                if let Err(e) = l.write_line(&line) {
+                    tracing::warn!("failed to write metrics log: {e}");
+                }
+            }
         }
     }
 

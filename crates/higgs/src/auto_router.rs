@@ -68,13 +68,13 @@ fn build_prompt(routes: &[RouteCandidate], messages: &[serde_json::Value]) -> St
 
 fn parse_route_name(text: &str, valid_names: &[&str]) -> Option<String> {
     // Try full JSON parse first
-    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim())
-        && let Some(name) = v.get("route").and_then(|r| r.as_str())
-    {
-        if name != "other" && valid_names.contains(&name) {
-            return Some(name.to_owned());
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(text.trim()) {
+        if let Some(name) = v.get("route").and_then(|r| r.as_str()) {
+            if name != "other" && valid_names.contains(&name) {
+                return Some(name.to_owned());
+            }
+            return None;
         }
-        return None;
     }
 
     // Fallback: regex extraction from surrounding text
