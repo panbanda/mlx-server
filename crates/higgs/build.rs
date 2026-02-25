@@ -1,6 +1,8 @@
 use std::{env, fs, path::PathBuf, process};
 
 fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+
     let is_macos = env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "macos");
 
     if !copy_metallib() && is_macos {
@@ -40,6 +42,8 @@ fn copy_metallib() -> bool {
         if !metallib.exists() {
             continue;
         }
+
+        println!("cargo:rerun-if-changed={}", metallib.display());
 
         // Copy to target profile dir (e.g. target/release/) so the binary finds it via dladdr
         let Some(profile_dir) = out_dir.ancestors().nth(3) else {
