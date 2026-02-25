@@ -1,5 +1,7 @@
 # higgs
 
+<img src="docs/higgs-header.jpg" alt="Higgs" width="100%">
+
 [![CI](https://github.com/panbanda/higgs/actions/workflows/ci.yml/badge.svg)](https://github.com/panbanda/higgs/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/panbanda/higgs)](https://github.com/panbanda/higgs/releases)
 [![Crates.io](https://img.shields.io/crates/v/higgs)](https://crates.io/crates/higgs)
