@@ -285,7 +285,7 @@ pub struct LoggingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetricsLogConfig {
-    #[serde(default)]
+    #[serde(default = "default_metrics_enabled")]
     pub enabled: bool,
     #[serde(default = "default_metrics_log_path")]
     pub path: String,
@@ -298,12 +298,16 @@ pub struct MetricsLogConfig {
 impl Default for MetricsLogConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             path: default_metrics_log_path(),
             max_size_mb: default_max_size_mb(),
             max_files: default_max_files(),
         }
     }
+}
+
+const fn default_metrics_enabled() -> bool {
+    true
 }
 
 fn default_metrics_log_path() -> String {
@@ -947,7 +951,7 @@ mod tests {
     #[test]
     fn test_logging_defaults() {
         let config = HiggsConfig::default();
-        assert!(!config.logging.metrics.enabled);
+        assert!(config.logging.metrics.enabled);
         assert_eq!(config.logging.metrics.max_size_mb, 50);
         assert_eq!(config.logging.metrics.max_files, 5);
         assert!(config.logging.metrics.path.contains("metrics.jsonl"));
