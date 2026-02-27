@@ -188,14 +188,22 @@ provider = "higgs"
     eprintln!("created {}", path.display());
 }
 
-#[allow(clippy::print_stdout)]
-pub fn cmd_shellenv(config: &HiggsConfig) {
-    let host = match config.server.host.as_str() {
+/// Map wildcard bind addresses to localhost for client connections.
+fn resolve_host(host: &str) -> &str {
+    match host {
         "0.0.0.0" => "127.0.0.1",
         "::" => "::1",
         other => other,
-    };
-    let addr = format!("{host}:{}", config.server.port);
+    }
+}
+
+#[allow(clippy::print_stdout)]
+pub fn cmd_shellenv(config: &HiggsConfig) {
+    let addr = format!(
+        "{}:{}",
+        resolve_host(&config.server.host),
+        config.server.port
+    );
 
     if TcpStream::connect(&addr).is_ok() {
         let base_url = format!("http://{addr}");
@@ -204,6 +212,9 @@ pub fn cmd_shellenv(config: &HiggsConfig) {
     }
 }
 
+/// Execute a command with `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` pointing at the Higgs server.
+///
+/// Replaces the current process via `exec`. Never returns on success.
 #[allow(clippy::print_stderr)]
 pub fn cmd_run(config: &HiggsConfig, command: &[String]) -> ! {
     let Some((program, args)) = command.split_first() else {
@@ -211,12 +222,11 @@ pub fn cmd_run(config: &HiggsConfig, command: &[String]) -> ! {
         std::process::exit(1);
     };
 
-    let host = match config.server.host.as_str() {
-        "0.0.0.0" => "127.0.0.1",
-        "::" => "::1",
-        other => other,
-    };
-    let addr = format!("{host}:{}", config.server.port);
+    let addr = format!(
+        "{}:{}",
+        resolve_host(&config.server.host),
+        config.server.port
+    );
 
     if TcpStream::connect(&addr).is_err() {
         eprintln!("higgs is not running on {addr}");
@@ -328,12 +338,11 @@ pub fn detach(config_path: &Path, verbose: bool, profile: Option<&str>) {
         );
         return;
     };
-    let probe_host = match probe_config.server.host.as_str() {
-        "0.0.0.0" => "127.0.0.1",
-        "::" => "::1",
-        other => other,
-    };
-    let probe_addr = format!("{probe_host}:{}", probe_config.server.port);
+    let probe_addr = format!(
+        "{}:{}",
+        resolve_host(&probe_config.server.host),
+        probe_config.server.port
+    );
 
     // Poll until the daemon is accepting connections or the process dies
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
@@ -653,5 +662,21 @@ mod tests {
             assert!(dir.join("config.dev.toml").exists());
             assert!(!dir.join("config.toml").exists());
         });
+    }
+
+    #[test]
+    fn resolve_host_maps_ipv4_wildcard() {
+        assert_eq!(resolve_host("0.0.0.0"), "127.0.0.1");
+    }
+
+    #[test]
+    fn resolve_host_maps_ipv6_wildcard() {
+        assert_eq!(resolve_host("::"), "::1");
+    }
+
+    #[test]
+    fn resolve_host_passes_through_other() {
+        assert_eq!(resolve_host("10.0.0.1"), "10.0.0.1");
+        assert_eq!(resolve_host("127.0.0.1"), "127.0.0.1");
     }
 }
