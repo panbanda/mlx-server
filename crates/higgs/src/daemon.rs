@@ -160,7 +160,7 @@ provider = "higgs"
 
 # --- Usage ---
 # eval "$(higgs shellenv)"  -- set env vars in current shell
-# higgs run -- claude        -- run a command with env vars set
+# higgs exec -- claude       -- exec a command with env vars set
 
 # --- Retention ---
 # How long to keep metrics in memory for the TUI dashboard.
@@ -216,7 +216,7 @@ pub fn cmd_shellenv(config: &HiggsConfig) {
 ///
 /// Replaces the current process via `exec`. Never returns on success.
 #[allow(clippy::print_stderr)]
-pub fn cmd_run(config: &HiggsConfig, command: &[String]) -> ! {
+pub fn cmd_exec(config: &HiggsConfig, command: &[String]) -> ! {
     let Some((program, args)) = command.split_first() else {
         eprintln!("no command specified");
         std::process::exit(1);

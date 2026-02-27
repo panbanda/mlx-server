@@ -1,4 +1,4 @@
-//! CLI integration tests for `higgs run`.
+//! CLI integration tests for `higgs exec`.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::tests_outside_test_module)]
 
@@ -18,9 +18,9 @@ fn higgs_bin() -> std::path::PathBuf {
 }
 
 #[test]
-fn run_exits_with_error_when_server_not_running() {
+fn exec_exits_with_error_when_server_not_running() {
     let output = Command::new(higgs_bin())
-        .args(["run", "--", "echo", "hello"])
+        .args(["exec", "--", "echo", "hello"])
         .env("HIGGS_CONFIG_DIR", "/tmp/higgs-test-nonexistent")
         .output()
         .unwrap();
@@ -34,8 +34,8 @@ fn run_exits_with_error_when_server_not_running() {
 }
 
 #[test]
-fn run_requires_command_argument() {
-    let output = Command::new(higgs_bin()).args(["run"]).output().unwrap();
+fn exec_requires_command_argument() {
+    let output = Command::new(higgs_bin()).args(["exec"]).output().unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);

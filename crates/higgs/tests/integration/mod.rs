@@ -1,4 +1,4 @@
-mod cli_run;
+mod cli_exec;
 mod error_contract;
 mod proxy_e2e;
 mod request_validation;

@@ -57,7 +57,7 @@ pub enum Commands {
     /// Print shell environment variables (for eval).
     Shellenv,
     /// Set shell environment and exec a command.
-    Run {
+    Exec {
         /// Command and arguments to execute.
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
