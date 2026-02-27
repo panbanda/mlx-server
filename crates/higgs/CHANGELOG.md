@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.13](https://github.com/panbanda/higgs/compare/higgs-v0.1.12...higgs-v0.1.13) (2026-02-27)
+
+
+### Features
+
+* add name field to ModelConfig ([#43](https://github.com/panbanda/higgs/issues/43)) ([54147e0](https://github.com/panbanda/higgs/commit/54147e01ec1e1d9d0f308aff1d5228716207b9c7))
+
 ## [0.1.12](https://github.com/panbanda/higgs/compare/higgs-v0.1.11...higgs-v0.1.12) (2026-02-25)
 
 
