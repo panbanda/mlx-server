@@ -7,7 +7,7 @@ use clap::Parser;
 
 use higgs::{
     build_router,
-    config::{self, Cli, Commands, ConfigAction, HiggsConfig, ServeArgs},
+    config::{self, Cli, Commands, ConfigAction, HiggsConfig, MetricsLogConfig, ServeArgs},
     model_download, model_resolver,
     router::Router,
     state::{AppState, Engine},
@@ -18,24 +18,29 @@ use higgs::{
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
+    if let Some(ref name) = cli.profile {
+        config::validate_profile_name(name)?;
+    }
+    let profile = cli.profile.as_deref();
+
     match cli.command {
         Commands::Serve(ref args) => cmd_serve(&cli, args).await,
         Commands::Start(ref _args) => {
             let config_path = resolve_config_path(&cli)?;
-            higgs::daemon::detach(&config_path, cli.verbose);
+            higgs::daemon::detach(&config_path, cli.verbose, profile);
             Ok(())
         }
         Commands::Stop => {
-            higgs::daemon::cmd_stop();
+            higgs::daemon::cmd_stop(profile);
             Ok(())
         }
         Commands::Attach => {
             let config = load_config_for_command(&cli)?;
-            higgs::daemon::run_attached(&config);
+            higgs::daemon::run_attached(&config, profile);
             Ok(())
         }
         Commands::Init => {
-            higgs::daemon::cmd_init();
+            higgs::daemon::cmd_init(profile);
             Ok(())
         }
         Commands::Shellenv => {
@@ -51,6 +56,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             init_tracing(cli.verbose);
             let config = if let Some(ref path) = cli.config {
                 config::load_config_file(path, Some(args))?
+            } else if cli.profile.is_some() {
+                let path = resolve_config_path(&cli)?;
+                config::load_config_file(&path, Some(args))?
             } else {
                 let default = config::default_config_path();
                 if default.exists() {
@@ -70,11 +78,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-/// Resolve a config file path from CLI args or the default location.
+/// Resolve a config file path from CLI args, profile, or the default location.
 #[allow(clippy::print_stderr)]
 fn resolve_config_path(cli: &Cli) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
     if let Some(ref path) = cli.config {
         return Ok(path.clone());
+    }
+    if let Some(ref name) = cli.profile {
+        let path = config::profile_config_path(name);
+        if path.exists() {
+            return Ok(path);
+        }
+        return Err(format!(
+            "profile config not found at {}\nhint: use 'higgs init --profile {name}' to create one",
+            path.display()
+        )
+        .into());
     }
     let default = config::default_config_path();
     if default.exists() {
@@ -97,13 +116,17 @@ fn load_config_for_command(cli: &Cli) -> Result<HiggsConfig, Box<dyn std::error:
 async fn cmd_serve(cli: &Cli, args: &ServeArgs) -> Result<(), Box<dyn std::error::Error>> {
     init_tracing(cli.verbose);
 
+    let profile = cli.profile.as_deref();
     let simple_mode = config::is_simple_mode(cli, args);
 
     // Load config: simple mode (--model) or config file mode (--config)
-    let higgs_config = if simple_mode {
+    let mut higgs_config = if simple_mode {
         config::build_simple_config(args)?
     } else if let Some(ref path) = cli.config {
         config::load_config_file(path, Some(args))?
+    } else if cli.profile.is_some() {
+        let path = resolve_config_path(cli)?;
+        config::load_config_file(&path, Some(args))?
     } else if args.models.is_empty() {
         let default_path = config::default_config_path();
         if default_path.exists() {
@@ -116,6 +139,15 @@ async fn cmd_serve(cli: &Cli, args: &ServeArgs) -> Result<(), Box<dyn std::error
     } else {
         config::build_simple_config(args)?
     };
+
+    // Rewrite metrics path for profile isolation if still at default
+    if let Some(name) = profile {
+        let default_path = config::default_metrics_log_path_for_profile(name);
+        let generic_default = MetricsLogConfig::default().path;
+        if higgs_config.logging.metrics.path == generic_default {
+            higgs_config.logging.metrics.path = default_path;
+        }
+    }
 
     // Load all local models and build router
     let engines = load_engines(&higgs_config)?;
@@ -157,7 +189,7 @@ async fn cmd_serve(cli: &Cli, args: &ServeArgs) -> Result<(), Box<dyn std::error
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
 
     // Write PID file after bind succeeds so it's never stale on bind errors
-    higgs::daemon::write_pid_file();
+    higgs::daemon::write_pid_file(profile);
 
     axum::serve(
         listener,
@@ -166,7 +198,7 @@ async fn cmd_serve(cli: &Cli, args: &ServeArgs) -> Result<(), Box<dyn std::error
     .with_graceful_shutdown(higgs::daemon::await_shutdown_signal())
     .await?;
 
-    higgs::daemon::remove_pid_file();
+    higgs::daemon::remove_pid_file(profile);
     Ok(())
 }
 
@@ -235,10 +267,13 @@ fn load_engines(
 }
 
 fn cmd_config(cli: &Cli, action: &ConfigAction) {
-    let config_path = cli
-        .config
-        .clone()
-        .unwrap_or_else(config::default_config_path);
+    let config_path = cli.config.clone().unwrap_or_else(|| {
+        cli.profile
+            .as_ref()
+            .map_or_else(config::default_config_path, |name| {
+                config::profile_config_path(name)
+            })
+    });
     match action {
         ConfigAction::Get { key } => {
             higgs::cli_config::config_get(&config_path, key);

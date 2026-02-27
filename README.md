@@ -42,6 +42,23 @@ higgs attach      # attach TUI dashboard to running daemon
 higgs stop        # stop daemon
 ```
 
+### Profiles
+
+Named profiles let you maintain multiple configurations and run multiple instances simultaneously:
+
+```bash
+higgs init --profile dev              # create config.dev.toml
+higgs init --profile prod             # create config.prod.toml
+higgs serve --profile dev             # foreground with dev config
+higgs start --profile dev             # daemon with dev config (separate PID/log)
+higgs start --profile prod            # daemon with prod config (different port)
+higgs attach --profile dev            # attach TUI to dev instance
+higgs stop --profile dev              # stop only the dev instance
+higgs doctor --profile prod           # validate prod config
+```
+
+Each profile gets isolated runtime files (`higgs.<profile>.pid`, `higgs.<profile>.log`, `metrics.<profile>.jsonl`). Profiles must use different ports (configured in each profile's config file). `--profile` and `--config` are mutually exclusive.
+
 ## Features
 
 ### Local inference
@@ -217,6 +234,14 @@ eval "$(higgs shellenv)"
 | `higgs config set <key> <value>` | Write a config value |
 | `higgs config path` | Print the resolved config file path |
 | `higgs doctor` | Validate config, check model paths, probe providers |
+
+### Global flags
+
+| Flag | Description |
+|---|---|
+| `--config <FILE>` | Path to config file (conflicts with `--profile`) |
+| `--profile <NAME>` | Named profile, resolves to `config.<NAME>.toml` (conflicts with `--config`) |
+| `--verbose` | Enable debug logging |
 
 ## Supported Architectures
 

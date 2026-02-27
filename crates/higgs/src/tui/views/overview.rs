@@ -220,7 +220,7 @@ fn draw_stats_row(frame: &mut Frame, area: Rect, snap: &[crate::metrics::Request
 }
 
 fn draw_token_usage(frame: &mut Frame, area: Rect, snap: &[crate::metrics::RequestRecord]) {
-    let (table, _) = super::models::model_table(snap, " Token Usage ".to_owned(), 0);
+    let (table, _) = super::models::model_table(snap, " Token Usage ".to_owned(), 0, None);
     frame.render_widget(table, area);
 }
 

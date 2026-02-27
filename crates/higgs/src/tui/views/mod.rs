@@ -5,6 +5,7 @@ pub mod errors;
 pub mod models;
 pub mod overview;
 pub mod providers;
+pub mod routing;
 
 /// Formats a token count for display: raw below 1K, "1.0K" style up to ~1M,
 /// "1.5M" style above.

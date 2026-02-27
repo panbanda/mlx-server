@@ -13,16 +13,16 @@ use crate::config::{self, HiggsConfig};
 use crate::metrics::MetricsStore;
 use crate::metrics_log::MetricsLogger;
 
-fn pid_path() -> std::path::PathBuf {
-    config::pid_path()
+fn pid_path(profile: Option<&str>) -> std::path::PathBuf {
+    config::pid_path(profile)
 }
 
-fn log_path() -> std::path::PathBuf {
-    config::log_path()
+fn log_path(profile: Option<&str>) -> std::path::PathBuf {
+    config::log_path(profile)
 }
 
-pub fn read_pid() -> Option<i32> {
-    fs::read_to_string(pid_path())
+pub fn read_pid(profile: Option<&str>) -> Option<i32> {
+    fs::read_to_string(pid_path(profile))
         .ok()
         .and_then(|s| s.trim().parse().ok())
 }
@@ -31,20 +31,21 @@ pub fn pid_is_alive(pid: i32) -> bool {
     kill(Pid::from_raw(pid), None).is_ok()
 }
 
-pub fn remove_pid_file() {
-    let _ = fs::remove_file(pid_path());
+pub fn remove_pid_file(profile: Option<&str>) {
+    let _ = fs::remove_file(pid_path(profile));
 }
 
-pub fn write_pid_file() {
+pub fn write_pid_file(profile: Option<&str>) {
     let pid = std::process::id();
-    if let Err(e) = fs::write(pid_path(), pid.to_string()) {
+    if let Err(e) = fs::write(pid_path(profile), pid.to_string()) {
         tracing::warn!("failed to write pid file: {e}");
     }
 }
 
 #[allow(clippy::print_stderr)]
-pub fn cmd_stop() {
-    match read_pid() {
+pub fn cmd_stop(profile: Option<&str>) {
+    let label = profile.map_or_else(|| "higgs".to_owned(), |p| format!("higgs [{p}]"));
+    match read_pid(profile) {
         Some(pid) if pid_is_alive(pid) => {
             if let Err(e) = kill(Pid::from_raw(pid), Signal::SIGTERM) {
                 eprintln!("failed to send SIGTERM to {pid}: {e}");
@@ -55,28 +56,31 @@ pub fn cmd_stop() {
             while pid_is_alive(pid) {
                 if std::time::Instant::now() >= deadline {
                     eprintln!("sent SIGTERM to {pid} but process still running after 5s");
-                    remove_pid_file();
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            remove_pid_file();
-            eprintln!("stopped higgs (pid {pid})");
+            remove_pid_file(profile);
+            eprintln!("stopped {label} (pid {pid})");
         }
         Some(_) => {
-            remove_pid_file();
-            eprintln!("higgs is not running (stale pid file removed)");
+            remove_pid_file(profile);
+            eprintln!("{label} is not running (stale pid file removed)");
         }
         None => {
-            eprintln!("higgs is not running (no pid file)");
+            eprintln!("{label} is not running (no pid file)");
         }
     }
 }
 
 #[allow(clippy::print_stderr)]
-pub fn cmd_init() {
+pub fn cmd_init(profile: Option<&str>) {
     let dir = config::config_dir();
-    let path = dir.join("config.toml");
+    let filename = profile.map_or_else(
+        || "config.toml".to_owned(),
+        |name| format!("config.{name}.toml"),
+    );
+    let path = dir.join(filename);
 
     if path.exists() {
         eprintln!("config already exists: {}", path.display());
@@ -88,7 +92,13 @@ pub fn cmd_init() {
         std::process::exit(1);
     }
 
-    let default_config = r#"[server]
+    let metrics_path_example = profile.map_or_else(
+        || "~/.config/higgs/logs/metrics.jsonl".to_owned(),
+        |name| format!("~/.config/higgs/logs/metrics.{name}.jsonl"),
+    );
+
+    let default_config = format!(
+        r#"[server]
 host = "0.0.0.0"
 port = 8000
 # max_tokens = 32768
@@ -159,10 +169,11 @@ provider = "higgs"
 
 # [logging.metrics]
 # enabled = true
-# path = "~/.config/higgs/logs/metrics.jsonl"
+# path = "{metrics_path_example}"
 # max_size_mb = 50
 # max_files = 5
-"#;
+"#
+    );
 
     if let Err(e) = fs::write(&path, default_config) {
         eprintln!("failed to write {}: {e}", path.display());
@@ -188,14 +199,16 @@ pub fn cmd_shellenv(config: &HiggsConfig) {
     }
 }
 
-#[allow(clippy::print_stderr, unsafe_code)]
-pub fn detach(config_path: &Path, verbose: bool) {
-    if let Some(pid) = read_pid() {
+#[allow(clippy::print_stderr, clippy::too_many_lines, unsafe_code)]
+pub fn detach(config_path: &Path, verbose: bool, profile: Option<&str>) {
+    let label = profile.map_or_else(|| "higgs".to_owned(), |p| format!("higgs [{p}]"));
+
+    if let Some(pid) = read_pid(profile) {
         if pid_is_alive(pid) {
-            eprintln!("higgs is already running (pid {pid})");
+            eprintln!("{label} is already running (pid {pid})");
             std::process::exit(1);
         }
-        remove_pid_file();
+        remove_pid_file(profile);
     }
 
     let dir = config::config_dir();
@@ -204,7 +217,7 @@ pub fn detach(config_path: &Path, verbose: bool) {
         std::process::exit(1);
     }
 
-    let Ok(log) = fs::File::create(log_path()) else {
+    let Ok(log) = fs::File::create(log_path(profile)) else {
         eprintln!("failed to create log file");
         std::process::exit(1);
     };
@@ -224,7 +237,12 @@ pub fn detach(config_path: &Path, verbose: bool) {
     };
 
     let mut cmd = std::process::Command::new(exe);
-    cmd.arg("serve").arg("--config").arg(config_path);
+    cmd.arg("serve");
+    if let Some(name) = profile {
+        cmd.arg("--profile").arg(name);
+    } else {
+        cmd.arg("--config").arg(config_path);
+    }
     if verbose {
         cmd.arg("--verbose");
     }
@@ -252,7 +270,7 @@ pub fn detach(config_path: &Path, verbose: bool) {
         let _ = child.wait();
     });
 
-    if let Err(e) = fs::write(pid_path(), child_pid.to_string()) {
+    if let Err(e) = fs::write(pid_path(profile), child_pid.to_string()) {
         eprintln!("failed to write pid file: {e}");
         std::process::exit(1);
     }
@@ -263,10 +281,14 @@ pub fn detach(config_path: &Path, verbose: bool) {
     };
 
     // Probe the server address from config to check readiness
-    let Ok(probe_config) = crate::config::load_config_file(config_path, None) else {
+    let probe_path = profile.map_or_else(
+        || config_path.to_path_buf(),
+        crate::config::profile_config_path,
+    );
+    let Ok(probe_config) = crate::config::load_config_file(&probe_path, None) else {
         eprintln!(
-            "higgs started (pid {child_pid}), log: {}",
-            log_path().display()
+            "{label} started (pid {child_pid}), log: {}",
+            log_path(profile).display()
         );
         return;
     };
@@ -281,21 +303,24 @@ pub fn detach(config_path: &Path, verbose: bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     loop {
         if !pid_is_alive(child_pid_i32) {
-            remove_pid_file();
-            eprintln!("higgs failed to start, check {}", log_path().display());
+            remove_pid_file(profile);
+            eprintln!(
+                "{label} failed to start, check {}",
+                log_path(profile).display()
+            );
             std::process::exit(1);
         }
         if TcpStream::connect(&probe_addr).is_ok() {
             eprintln!(
-                "higgs started (pid {child_pid}), log: {}",
-                log_path().display()
+                "{label} started (pid {child_pid}), log: {}",
+                log_path(profile).display()
             );
             return;
         }
         if std::time::Instant::now() >= deadline {
             eprintln!(
-                "higgs started (pid {child_pid}) but not yet accepting connections, log: {}",
-                log_path().display()
+                "{label} started (pid {child_pid}) but not yet accepting connections, log: {}",
+                log_path(profile).display()
             );
             return;
         }
@@ -304,7 +329,7 @@ pub fn detach(config_path: &Path, verbose: bool) {
 }
 
 #[allow(clippy::print_stderr)]
-pub fn run_attached(config: &HiggsConfig) {
+pub fn run_attached(config: &HiggsConfig, profile: Option<&str>) {
     if !config.logging.metrics.enabled {
         eprintln!("cannot attach: [logging.metrics] enabled = true required in config");
         std::process::exit(1);
@@ -333,7 +358,9 @@ pub fn run_attached(config: &HiggsConfig) {
         }
     });
 
-    match crate::tui::run(Arc::clone(&metrics), true) {
+    let tui_config = crate::tui::TuiConfig::from_higgs_config(config, profile);
+
+    match crate::tui::run(Arc::clone(&metrics), true, Some(tui_config)) {
         Ok(_) => {}
         Err(e) => {
             eprintln!("TUI error: {e}");
@@ -433,21 +460,35 @@ mod tests {
     #[test]
     fn pid_path_suffix() {
         with_temp_config_dir(|dir| {
-            assert_eq!(pid_path(), dir.join("higgs.pid"));
+            assert_eq!(pid_path(None), dir.join("higgs.pid"));
+        });
+    }
+
+    #[test]
+    fn pid_path_profile_suffix() {
+        with_temp_config_dir(|dir| {
+            assert_eq!(pid_path(Some("dev")), dir.join("higgs.dev.pid"));
         });
     }
 
     #[test]
     fn log_path_suffix() {
         with_temp_config_dir(|dir| {
-            assert_eq!(log_path(), dir.join("higgs.log"));
+            assert_eq!(log_path(None), dir.join("higgs.log"));
+        });
+    }
+
+    #[test]
+    fn log_path_profile_suffix() {
+        with_temp_config_dir(|dir| {
+            assert_eq!(log_path(Some("dev")), dir.join("higgs.dev.log"));
         });
     }
 
     #[test]
     fn read_pid_none_when_no_file() {
         with_temp_config_dir(|_| {
-            assert!(read_pid().is_none());
+            assert!(read_pid(None).is_none());
         });
     }
 
@@ -455,7 +496,7 @@ mod tests {
     fn read_pid_returns_valid_pid() {
         with_temp_config_dir(|dir| {
             std::fs::write(dir.join("higgs.pid"), "12345").unwrap();
-            assert_eq!(read_pid(), Some(12345));
+            assert_eq!(read_pid(None), Some(12345));
         });
     }
 
@@ -463,7 +504,7 @@ mod tests {
     fn read_pid_none_for_non_numeric() {
         with_temp_config_dir(|dir| {
             std::fs::write(dir.join("higgs.pid"), "not-a-number").unwrap();
-            assert!(read_pid().is_none());
+            assert!(read_pid(None).is_none());
         });
     }
 
@@ -471,8 +512,8 @@ mod tests {
     fn write_and_read_pid_file() {
         with_temp_config_dir(|dir| {
             std::fs::create_dir_all(dir).unwrap();
-            write_pid_file();
-            let pid = read_pid().unwrap();
+            write_pid_file(None);
+            let pid = read_pid(None).unwrap();
             assert_eq!(pid, i32::try_from(std::process::id()).unwrap());
         });
     }
@@ -483,7 +524,7 @@ mod tests {
             let path = dir.join("higgs.pid");
             std::fs::write(&path, "12345").unwrap();
             assert!(path.exists());
-            remove_pid_file();
+            remove_pid_file(None);
             assert!(!path.exists());
         });
     }
@@ -491,7 +532,7 @@ mod tests {
     #[test]
     fn remove_pid_file_noop_when_missing() {
         with_temp_config_dir(|_| {
-            remove_pid_file();
+            remove_pid_file(None);
         });
     }
 
@@ -552,7 +593,7 @@ mod tests {
     fn cmd_init_creates_config_file() {
         with_temp_config_dir(|dir| {
             std::fs::create_dir_all(dir).unwrap();
-            cmd_init();
+            cmd_init(None);
             assert!(dir.join("config.toml").exists());
         });
     }
@@ -563,8 +604,18 @@ mod tests {
             std::fs::create_dir_all(dir).unwrap();
             let path = dir.join("config.toml");
             std::fs::write(&path, "existing content").unwrap();
-            cmd_init();
+            cmd_init(None);
             assert_eq!(std::fs::read_to_string(&path).unwrap(), "existing content");
+        });
+    }
+
+    #[test]
+    fn cmd_init_profile_creates_named_config() {
+        with_temp_config_dir(|dir| {
+            std::fs::create_dir_all(dir).unwrap();
+            cmd_init(Some("dev"));
+            assert!(dir.join("config.dev.toml").exists());
+            assert!(!dir.join("config.toml").exists());
         });
     }
 }

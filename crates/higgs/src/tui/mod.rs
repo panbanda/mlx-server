@@ -8,7 +8,85 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Tabs};
 
+use crate::config::HiggsConfig;
 use crate::metrics::MetricsStore;
+
+// ---------------------------------------------------------------------------
+// TuiConfig -- config data passed to the TUI for display
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TuiConfig {
+    pub profile: Option<String>,
+    pub model_names: Vec<String>,
+    pub provider_names: Vec<String>,
+    pub routes: Vec<TuiRoute>,
+    pub default_provider: String,
+    pub auto_router: TuiAutoRouter,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuiRoute {
+    pub pattern: Option<String>,
+    pub provider: String,
+    pub model_rewrite: Option<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TuiAutoRouter {
+    pub enabled: bool,
+    pub force: bool,
+    pub model: String,
+    pub timeout_ms: u64,
+}
+
+impl TuiConfig {
+    pub fn from_higgs_config(config: &HiggsConfig, profile: Option<&str>) -> Self {
+        let model_names: Vec<String> = config
+            .models
+            .iter()
+            .map(|m| {
+                m.name
+                    .clone()
+                    .unwrap_or_else(|| m.path.rsplit('/').next().unwrap_or(&m.path).to_owned())
+            })
+            .collect();
+
+        let mut provider_names: Vec<String> = config.providers.keys().cloned().collect();
+        if !config.models.is_empty() && !provider_names.contains(&"higgs".to_owned()) {
+            provider_names.push("higgs".to_owned());
+        }
+        provider_names.sort();
+
+        let routes: Vec<TuiRoute> = config
+            .routes
+            .iter()
+            .map(|r| TuiRoute {
+                pattern: r.pattern.clone(),
+                provider: r.provider.clone(),
+                model_rewrite: r.model.clone(),
+                name: r.name.clone(),
+                description: r.description.clone(),
+            })
+            .collect();
+
+        Self {
+            profile: profile.map(String::from),
+            model_names,
+            provider_names,
+            routes,
+            default_provider: config.default.provider.clone(),
+            auto_router: TuiAutoRouter {
+                enabled: config.auto_router.enabled,
+                force: config.auto_router.force,
+                model: config.auto_router.model.clone(),
+                timeout_ms: config.auto_router.timeout_ms,
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -16,11 +94,18 @@ pub enum Tab {
     Models,
     Providers,
     Errors,
+    Routing,
 }
 
 impl Tab {
     fn titles() -> Vec<&'static str> {
-        vec!["Overview [1]", "Models [2]", "Providers [3]", "Errors [4]"]
+        vec![
+            "Overview [1]",
+            "Models [2]",
+            "Providers [3]",
+            "Errors [4]",
+            "Routing [5]",
+        ]
     }
 
     const fn index(self) -> usize {
@@ -29,6 +114,7 @@ impl Tab {
             Self::Models => 1,
             Self::Providers => 2,
             Self::Errors => 3,
+            Self::Routing => 4,
         }
     }
 }
@@ -45,16 +131,22 @@ pub struct App {
     pub scroll_offset: usize,
     pub exit_mode: Option<ExitMode>,
     pub attached: bool,
+    pub config: Option<TuiConfig>,
 }
 
 impl App {
-    pub const fn new(metrics: Arc<MetricsStore>, attached: bool) -> Self {
+    pub const fn new(
+        metrics: Arc<MetricsStore>,
+        attached: bool,
+        config: Option<TuiConfig>,
+    ) -> Self {
         Self {
             metrics,
             active_tab: Tab::Overview,
             scroll_offset: 0,
             exit_mode: None,
             attached,
+            config,
         }
     }
 
@@ -84,21 +176,27 @@ impl App {
                 self.active_tab = Tab::Errors;
                 self.scroll_offset = 0;
             }
+            KeyCode::Char('5') => {
+                self.active_tab = Tab::Routing;
+                self.scroll_offset = 0;
+            }
             KeyCode::Tab | KeyCode::Right | KeyCode::Char('l') => {
                 self.active_tab = match self.active_tab {
                     Tab::Overview => Tab::Models,
                     Tab::Models => Tab::Providers,
                     Tab::Providers => Tab::Errors,
-                    Tab::Errors => Tab::Overview,
+                    Tab::Errors => Tab::Routing,
+                    Tab::Routing => Tab::Overview,
                 };
                 self.scroll_offset = 0;
             }
             KeyCode::Left | KeyCode::Char('h') => {
                 self.active_tab = match self.active_tab {
-                    Tab::Overview => Tab::Errors,
+                    Tab::Overview => Tab::Routing,
                     Tab::Models => Tab::Overview,
                     Tab::Providers => Tab::Models,
                     Tab::Errors => Tab::Providers,
+                    Tab::Routing => Tab::Errors,
                 };
                 self.scroll_offset = 0;
             }
@@ -135,10 +233,17 @@ impl App {
 
     #[allow(clippy::indexing_slicing)]
     pub fn draw(&self, frame: &mut Frame) {
+        let profile_tag = self
+            .config
+            .as_ref()
+            .and_then(|c| c.profile.as_ref())
+            .map(|p| format!(" [{p}]"))
+            .unwrap_or_default();
+
         let title = if self.attached {
-            " higgs (attached) "
+            format!(" higgs{profile_tag} (attached) ")
         } else {
-            " higgs "
+            format!(" higgs{profile_tag} ")
         };
 
         let hint = if self.attached {
@@ -173,13 +278,30 @@ impl App {
                 views::overview::draw(frame, content_area, &self.metrics, self.scroll_offset);
             }
             Tab::Models => {
-                views::models::draw(frame, content_area, &self.metrics, self.scroll_offset);
+                let names = self.config.as_ref().map(|c| c.model_names.as_slice());
+                views::models::draw(
+                    frame,
+                    content_area,
+                    &self.metrics,
+                    self.scroll_offset,
+                    names,
+                );
             }
             Tab::Providers => {
-                views::providers::draw(frame, content_area, &self.metrics, self.scroll_offset);
+                let names = self.config.as_ref().map(|c| c.provider_names.as_slice());
+                views::providers::draw(
+                    frame,
+                    content_area,
+                    &self.metrics,
+                    self.scroll_offset,
+                    names,
+                );
             }
             Tab::Errors => {
                 views::errors::draw(frame, content_area, &self.metrics, self.scroll_offset);
+            }
+            Tab::Routing => {
+                views::routing::draw(frame, content_area, self.config.as_ref());
             }
         }
 
@@ -191,7 +313,11 @@ impl App {
     }
 }
 
-pub fn run(metrics: Arc<MetricsStore>, attached: bool) -> io::Result<ExitMode> {
+pub fn run(
+    metrics: Arc<MetricsStore>,
+    attached: bool,
+    config: Option<TuiConfig>,
+) -> io::Result<ExitMode> {
     let mut terminal = ratatui::init();
 
     let default_hook = std::panic::take_hook();
@@ -200,7 +326,7 @@ pub fn run(metrics: Arc<MetricsStore>, attached: bool) -> io::Result<ExitMode> {
         default_hook(info);
     }));
 
-    let mut app = App::new(metrics, attached);
+    let mut app = App::new(metrics, attached, config);
 
     let result = (|| -> io::Result<ExitMode> {
         loop {
@@ -234,11 +360,19 @@ mod tests {
     use super::*;
 
     fn make_app() -> App {
-        App::new(Arc::new(MetricsStore::new(Duration::from_secs(60))), false)
+        App::new(
+            Arc::new(MetricsStore::new(Duration::from_secs(60))),
+            false,
+            None,
+        )
     }
 
     fn make_attached_app() -> App {
-        App::new(Arc::new(MetricsStore::new(Duration::from_secs(60))), true)
+        App::new(
+            Arc::new(MetricsStore::new(Duration::from_secs(60))),
+            true,
+            None,
+        )
     }
 
     fn key(code: KeyCode) -> event::KeyEvent {
@@ -294,6 +428,7 @@ mod tests {
             ('2', Tab::Models),
             ('3', Tab::Providers),
             ('4', Tab::Errors),
+            ('5', Tab::Routing),
             ('1', Tab::Overview),
         ] {
             app.handle_key(key(KeyCode::Char(ch)));
@@ -318,7 +453,13 @@ mod tests {
     fn tab_cycles_through_tabs() {
         assert_tab_cycle(
             KeyCode::Tab,
-            &[Tab::Models, Tab::Providers, Tab::Errors, Tab::Overview],
+            &[
+                Tab::Models,
+                Tab::Providers,
+                Tab::Errors,
+                Tab::Routing,
+                Tab::Overview,
+            ],
         );
     }
 
@@ -348,7 +489,13 @@ mod tests {
     fn right_arrow_cycles_forward() {
         assert_tab_cycle(
             KeyCode::Right,
-            &[Tab::Models, Tab::Providers, Tab::Errors, Tab::Overview],
+            &[
+                Tab::Models,
+                Tab::Providers,
+                Tab::Errors,
+                Tab::Routing,
+                Tab::Overview,
+            ],
         );
     }
 
@@ -356,7 +503,13 @@ mod tests {
     fn left_arrow_cycles_backward() {
         assert_tab_cycle(
             KeyCode::Left,
-            &[Tab::Errors, Tab::Providers, Tab::Models, Tab::Overview],
+            &[
+                Tab::Routing,
+                Tab::Errors,
+                Tab::Providers,
+                Tab::Models,
+                Tab::Overview,
+            ],
         );
     }
 
@@ -399,5 +552,182 @@ mod tests {
     fn footer_hides_detach_in_attached() {
         let app = make_attached_app();
         assert!(app.attached);
+    }
+
+    // -- TuiConfig::from_higgs_config tests -----------------------------------
+
+    use crate::config::{
+        AutoRouterConfig, DefaultRoute, HiggsConfig, ModelConfig, ProviderConfig, RouteConfig,
+    };
+    use std::collections::HashMap;
+
+    fn minimal_config() -> HiggsConfig {
+        HiggsConfig {
+            models: vec![ModelConfig {
+                path: "mlx-community/Llama-3.2-1B-Instruct-4bit".to_owned(),
+                name: None,
+                batch: false,
+            }],
+            ..HiggsConfig::default()
+        }
+    }
+
+    #[test]
+    fn from_config_extracts_model_name_from_path() {
+        let config = minimal_config();
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert_eq!(tui.model_names, vec!["Llama-3.2-1B-Instruct-4bit"]);
+    }
+
+    #[test]
+    fn from_config_uses_explicit_model_name() {
+        let mut config = minimal_config();
+        config.models[0].name = Some("llama".to_owned());
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert_eq!(tui.model_names, vec!["llama"]);
+    }
+
+    #[test]
+    fn from_config_injects_higgs_provider_when_models_exist() {
+        let config = minimal_config();
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert!(tui.provider_names.contains(&"higgs".to_owned()));
+    }
+
+    #[test]
+    fn from_config_no_higgs_provider_without_models() {
+        let config = HiggsConfig::default();
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert!(!tui.provider_names.contains(&"higgs".to_owned()));
+    }
+
+    #[test]
+    fn from_config_includes_remote_providers() {
+        let mut config = minimal_config();
+        config.providers.insert(
+            "anthropic".to_owned(),
+            ProviderConfig {
+                url: "https://api.anthropic.com".to_owned(),
+                format: crate::config::ApiFormat::Anthropic,
+                api_key: None,
+                strip_auth: false,
+                stub_count_tokens: false,
+            },
+        );
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert!(tui.provider_names.contains(&"anthropic".to_owned()));
+        assert!(tui.provider_names.contains(&"higgs".to_owned()));
+    }
+
+    #[test]
+    fn from_config_providers_are_sorted() {
+        let mut config = minimal_config();
+        let mut providers = HashMap::new();
+        providers.insert(
+            "openai".to_owned(),
+            ProviderConfig {
+                url: "https://api.openai.com".to_owned(),
+                format: crate::config::ApiFormat::OpenAi,
+                api_key: None,
+                strip_auth: false,
+                stub_count_tokens: false,
+            },
+        );
+        providers.insert(
+            "anthropic".to_owned(),
+            ProviderConfig {
+                url: "https://api.anthropic.com".to_owned(),
+                format: crate::config::ApiFormat::Anthropic,
+                api_key: None,
+                strip_auth: false,
+                stub_count_tokens: false,
+            },
+        );
+        config.providers = providers;
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        let expected = vec!["anthropic", "higgs", "openai"];
+        assert_eq!(tui.provider_names, expected);
+    }
+
+    #[test]
+    fn from_config_maps_routes() {
+        let mut config = minimal_config();
+        config.routes = vec![RouteConfig {
+            pattern: Some("claude-.*".to_owned()),
+            provider: "anthropic".to_owned(),
+            model: Some("claude-sonnet-4-6".to_owned()),
+            name: Some("Claude".to_owned()),
+            description: Some("Anthropic models".to_owned()),
+        }];
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert_eq!(tui.routes.len(), 1);
+        let r = &tui.routes[0];
+        assert_eq!(r.pattern.as_deref(), Some("claude-.*"));
+        assert_eq!(r.provider, "anthropic");
+        assert_eq!(r.model_rewrite.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(r.name.as_deref(), Some("Claude"));
+        assert_eq!(r.description.as_deref(), Some("Anthropic models"));
+    }
+
+    #[test]
+    fn from_config_copies_default_provider() {
+        let mut config = minimal_config();
+        config.default = DefaultRoute {
+            provider: "openai".to_owned(),
+        };
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert_eq!(tui.default_provider, "openai");
+    }
+
+    #[test]
+    fn from_config_copies_auto_router() {
+        let mut config = minimal_config();
+        config.auto_router = AutoRouterConfig {
+            enabled: true,
+            force: true,
+            model: "my-router".to_owned(),
+            timeout_ms: 5000,
+        };
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert!(tui.auto_router.enabled);
+        assert!(tui.auto_router.force);
+        assert_eq!(tui.auto_router.model, "my-router");
+        assert_eq!(tui.auto_router.timeout_ms, 5000);
+    }
+
+    #[test]
+    fn from_config_passes_profile() {
+        let config = minimal_config();
+        let tui = TuiConfig::from_higgs_config(&config, Some("dev"));
+        assert_eq!(tui.profile.as_deref(), Some("dev"));
+    }
+
+    #[test]
+    fn from_config_none_profile() {
+        let config = minimal_config();
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        assert!(tui.profile.is_none());
+    }
+
+    #[test]
+    fn from_config_no_duplicate_higgs_when_already_a_provider() {
+        let mut config = minimal_config();
+        config.providers.insert(
+            "higgs".to_owned(),
+            ProviderConfig {
+                url: "http://localhost:8000".to_owned(),
+                format: crate::config::ApiFormat::OpenAi,
+                api_key: None,
+                strip_auth: false,
+                stub_count_tokens: false,
+            },
+        );
+        let tui = TuiConfig::from_higgs_config(&config, None);
+        let higgs_count = tui
+            .provider_names
+            .iter()
+            .filter(|n| n.as_str() == "higgs")
+            .count();
+        assert_eq!(higgs_count, 1);
     }
 }

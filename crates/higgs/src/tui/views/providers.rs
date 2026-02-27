@@ -6,7 +6,13 @@ use ratatui::widgets::{Block, Borders, Cell, Row, Table};
 use super::{format_duration, format_tokens};
 use crate::metrics::MetricsStore;
 
-pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: usize) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    metrics: &Arc<MetricsStore>,
+    scroll: usize,
+    configured_providers: Option<&[String]>,
+) {
     let snap = metrics.snapshot();
     let groups = MetricsStore::group_by(&snap, |r| r.provider.clone());
 
@@ -15,7 +21,15 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
     ])
     .style(Style::default().add_modifier(Modifier::BOLD));
 
-    let mut names: Vec<&String> = groups.keys().collect();
+    let mut names: Vec<String> = groups.keys().cloned().collect();
+    // Merge in configured provider names not already present in metrics
+    if let Some(configured) = configured_providers {
+        for name in configured {
+            if !names.contains(name) {
+                names.push(name.clone());
+            }
+        }
+    }
     names.sort();
 
     let total = names.len();
@@ -23,8 +37,21 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
     let rows: Vec<Row> = names
         .iter()
         .skip(scroll)
-        .filter_map(|name| {
-            let records = groups.get(*name)?;
+        .map(|name| {
+            let Some(records) = groups.get(name) else {
+                // Zero-traffic configured provider
+                let dim = Style::default().fg(Color::DarkGray);
+                return Row::new(vec![
+                    Cell::from(name.as_str()).style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                ]);
+            };
             let count = u64::try_from(records.len()).unwrap_or(0);
             let input: u64 = records.iter().map(|r| r.input_tokens).sum();
             let output: u64 = records.iter().map(|r| r.output_tokens).sum();
@@ -38,7 +65,7 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
             } else {
                 Style::default().fg(Color::DarkGray)
             };
-            Some(Row::new(vec![
+            Row::new(vec![
                 Cell::from(name.as_str()).style(Style::default().fg(Color::White)),
                 Cell::from(format_tokens(count)),
                 Cell::from(format_tokens(input)).style(Style::default().fg(Color::Cyan)),
@@ -48,7 +75,7 @@ pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: 
                 Cell::from(format_duration(p50)),
                 Cell::from(format_duration(p95)),
                 Cell::from(format_tokens(errors)).style(error_style),
-            ]))
+            ])
         })
         .collect();
 
@@ -105,7 +132,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                draw(f, f.area(), &metrics, 0);
+                draw(f, f.area(), &metrics, 0, None);
             })
             .unwrap();
     }
@@ -118,7 +145,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                draw(f, f.area(), &metrics, 0);
+                draw(f, f.area(), &metrics, 0, None);
             })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -130,6 +157,29 @@ mod tests {
         assert!(
             content.contains("anthropic"),
             "buffer should contain provider name"
+        );
+    }
+
+    #[test]
+    fn draw_shows_configured_zero_traffic_providers() {
+        let metrics = Arc::new(MetricsStore::new(Duration::from_secs(3600)));
+        let configured = vec!["openai".to_owned(), "ollama".to_owned()];
+        let backend = ratatui::backend::TestBackend::new(120, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                draw(f, f.area(), &metrics, 0, Some(&configured));
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let content: String = buffer
+            .content()
+            .iter()
+            .map(|c| c.symbol().chars().next().unwrap_or(' '))
+            .collect();
+        assert!(
+            content.contains("openai"),
+            "buffer should contain configured provider"
         );
     }
 }

@@ -8,7 +8,13 @@ use crate::metrics::{MetricsStore, RequestRecord, RoutingMethod};
 
 /// Builds model-summary rows from a snapshot. Shared by the Models tab and the
 /// overview Token Usage panel.
-pub fn model_table(snap: &[RequestRecord], title: String, skip: usize) -> (Table<'static>, usize) {
+#[allow(clippy::too_many_lines)]
+pub fn model_table(
+    snap: &[RequestRecord],
+    title: String,
+    skip: usize,
+    configured_models: Option<&[String]>,
+) -> (Table<'static>, usize) {
     let groups = MetricsStore::group_by(snap, |r| r.model.clone());
 
     let header = Row::new(vec![
@@ -17,14 +23,36 @@ pub fn model_table(snap: &[RequestRecord], title: String, skip: usize) -> (Table
     .style(Style::default().add_modifier(Modifier::BOLD));
 
     let mut model_names: Vec<String> = groups.keys().cloned().collect();
+    // Merge in configured names not already present in metrics
+    if let Some(configured) = configured_models {
+        for name in configured {
+            if !model_names.contains(name) {
+                model_names.push(name.clone());
+            }
+        }
+    }
     model_names.sort();
     let total = model_names.len();
 
     let rows: Vec<Row> = model_names
         .iter()
         .skip(skip)
-        .filter_map(|model| {
-            let records = groups.get(model)?;
+        .map(|model| {
+            let Some(records) = groups.get(model) else {
+                // Zero-traffic configured model
+                let dim = Style::default().fg(Color::DarkGray);
+                return Row::new(vec![
+                    Cell::from("---").style(dim),
+                    Cell::from(model.clone()).style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                    Cell::from("-").style(dim),
+                ]);
+            };
             let count = u64::try_from(records.len()).unwrap_or(0);
             let input: u64 = records.iter().map(|r| r.input_tokens).sum();
             let output: u64 = records.iter().map(|r| r.output_tokens).sum();
@@ -65,7 +93,7 @@ pub fn model_table(snap: &[RequestRecord], title: String, skip: usize) -> (Table
                 Style::default().fg(Color::DarkGray)
             };
 
-            Some(Row::new(vec![
+            Row::new(vec![
                 Cell::from(indicator).style(indicator_style),
                 Cell::from(model.clone()).style(Style::default().fg(Color::White)),
                 Cell::from(format_tokens(count)),
@@ -76,7 +104,7 @@ pub fn model_table(snap: &[RequestRecord], title: String, skip: usize) -> (Table
                 Cell::from(format_duration(p50)),
                 Cell::from(format_duration(p95)),
                 Cell::from(format_tokens(errors)).style(error_style),
-            ]))
+            ])
         })
         .collect();
 
@@ -100,9 +128,15 @@ pub fn model_table(snap: &[RequestRecord], title: String, skip: usize) -> (Table
     (table, total)
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, metrics: &Arc<MetricsStore>, scroll: usize) {
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    metrics: &Arc<MetricsStore>,
+    scroll: usize,
+    configured_models: Option<&[String]>,
+) {
     let snap = metrics.snapshot();
-    let (table, total) = model_table(&snap, " Models ".to_owned(), scroll);
+    let (table, total) = model_table(&snap, " Models ".to_owned(), scroll, configured_models);
     frame.render_widget(table, area);
     super::render_scrollbar(frame, area, total, scroll);
 }
@@ -140,7 +174,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                draw(f, f.area(), &metrics, 0);
+                draw(f, f.area(), &metrics, 0, None);
             })
             .unwrap();
     }
@@ -153,7 +187,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| {
-                draw(f, f.area(), &metrics, 0);
+                draw(f, f.area(), &metrics, 0, None);
             })
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
@@ -177,7 +211,15 @@ mod tests {
         let mut other = sample_record();
         other.model = "gpt-4".to_owned();
         records.push(other);
-        let (_, total) = model_table(&records, " Test ".to_owned(), 0);
+        let (_, total) = model_table(&records, " Test ".to_owned(), 0, None);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn model_table_includes_configured_with_zero_traffic() {
+        let records = vec![sample_record()];
+        let configured = vec!["claude-opus-4-6".to_owned(), "unused-model".to_owned()];
+        let (_, total) = model_table(&records, " Test ".to_owned(), 0, Some(&configured));
         assert_eq!(total, 2);
     }
 }
