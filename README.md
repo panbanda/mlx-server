@@ -93,6 +93,7 @@ port = 8000
 # --- Local models ---
 [[models]]
 path = "mlx-community/Llama-3.2-1B-Instruct-4bit"
+# name = "llama"     # optional friendly name (used as engine key and for auto_router lookup)
 # batch = false
 
 # --- Remote providers ---
@@ -131,9 +132,10 @@ provider = "higgs"   # "higgs" = local models only; set to a provider name to pr
 
 # --- Auto router (optional) ---
 # Classify requests with a local LLM to pick the best provider automatically.
+# The model field can reference a model by name or path.
 # [auto_router]
 # enabled = true
-# model = "mlx-community/Arch-Router-1.5B-4bit"
+# model = "llama"    # matches [[models]] name or path
 # timeout_ms = 2000
 
 # --- Metrics & dashboard ---
