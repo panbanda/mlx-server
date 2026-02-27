@@ -4,3 +4,10 @@ pre-commit:
       glob: "**/*.rs"
       run: cargo fmt --all
       stage_fixed: true
+
+pre-push:
+  commands:
+    fmt-check:
+      run: cargo fmt --all -- --check
+    clippy:
+      run: RUSTFLAGS=-Dwarnings cargo clippy --all-targets --all-features

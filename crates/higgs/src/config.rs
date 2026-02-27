@@ -1102,7 +1102,10 @@ mod tests {
         )
         .unwrap();
         let config = load_config_file(&path, None).unwrap();
-        assert_eq!(config.models[0].name.as_deref(), Some("coder"));
+        assert_eq!(
+            config.models.first().unwrap().name.as_deref(),
+            Some("coder")
+        );
     }
 
     #[test]
@@ -1118,6 +1121,6 @@ mod tests {
         )
         .unwrap();
         let config = load_config_file(&path, None).unwrap();
-        assert!(config.models[0].name.is_none());
+        assert!(config.models.first().unwrap().name.is_none());
     }
 }
