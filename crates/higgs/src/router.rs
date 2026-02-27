@@ -154,12 +154,9 @@ impl Router {
                 warn!("auto_router is enabled but no routes have descriptions");
             }
             let auto_model = &config.auto_router.model;
-            let engine = engines
-                .get(auto_model)
-                .cloned()
-                .ok_or_else(|| {
-                    format!("auto_router model '{auto_model}' not found among loaded models")
-                })?;
+            let engine = engines.get(auto_model).cloned().ok_or_else(|| {
+                format!("auto_router model '{auto_model}' not found among loaded models")
+            })?;
             Some(engine)
         } else {
             None
@@ -824,10 +821,7 @@ mod tests {
         engines.insert("router".to_owned(), Arc::new(engine));
 
         let router = Router::from_config(&config, engines);
-        assert!(
-            router.is_ok(),
-            "should resolve auto_router model by name"
-        );
+        assert!(router.is_ok(), "should resolve auto_router model by name");
     }
 
     #[tokio::test]
