@@ -212,9 +212,6 @@ pub fn cmd_shellenv(config: &HiggsConfig) {
     }
 }
 
-/// Execute a command with `ANTHROPIC_BASE_URL` and `OPENAI_BASE_URL` pointing at the Higgs server.
-///
-/// Replaces the current process via `exec`. Never returns on success.
 #[allow(clippy::print_stderr)]
 pub fn cmd_run(config: &HiggsConfig, command: &[String]) -> ! {
     let Some((program, args)) = command.split_first() else {
@@ -222,11 +219,12 @@ pub fn cmd_run(config: &HiggsConfig, command: &[String]) -> ! {
         std::process::exit(1);
     };
 
-    let addr = format!(
-        "{}:{}",
-        resolve_host(&config.server.host),
-        config.server.port
-    );
+    let host = match config.server.host.as_str() {
+        "0.0.0.0" => "127.0.0.1",
+        "::" => "::1",
+        other => other,
+    };
+    let addr = format!("{host}:{}", config.server.port);
 
     if TcpStream::connect(&addr).is_err() {
         eprintln!("higgs is not running on {addr}");
