@@ -254,7 +254,7 @@ pub fn cmd_exec(config: &HiggsConfig, command: &[String]) -> ! {
     };
     let child_pid = nix::unistd::Pid::from_raw(child_pid_raw);
 
-    // Forward SIGINT/SIGTERM to child, then wait for it to exit.
+    // Forward Ctrl+C (SIGINT) to child as SIGTERM, then wait for it to exit.
     ctrlc::set_handler(move || {
         let _ = nix::sys::signal::kill(child_pid, nix::sys::signal::Signal::SIGTERM);
     })
