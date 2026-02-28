@@ -164,9 +164,11 @@ fn exec_sigint_terminates_child() {
         elapsed < Duration::from_secs(5),
         "child should terminate within 5s after SIGINT, took {elapsed:?}"
     );
-    // The child exits from signal, so it won't have a success code
-    assert!(
-        !status.success(),
-        "expected non-zero exit after SIGINT, got: {status}"
+    // SIGINT handler forwards SIGTERM (signal 15) to child, so exit code
+    // should be 128 + 15 = 143 per Unix convention.
+    assert_eq!(
+        status.code(),
+        Some(143),
+        "expected exit code 143 (128 + SIGTERM), got: {status}"
     );
 }

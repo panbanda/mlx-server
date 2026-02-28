@@ -261,7 +261,11 @@ pub fn cmd_exec(config: &HiggsConfig, command: &[String]) -> ! {
     .unwrap_or_else(|e| eprintln!("warning: failed to set signal handler: {e}"));
 
     let status = match child.wait() {
-        Ok(s) => s.code().unwrap_or(1),
+        Ok(s) => s.code().unwrap_or_else(|| {
+            // Child killed by signal -- use the Unix convention of 128 + signal.
+            use std::os::unix::process::ExitStatusExt;
+            s.signal().map_or(1, |sig| 128 + sig)
+        }),
         Err(e) => {
             eprintln!("failed to wait for '{program}': {e}");
             1
