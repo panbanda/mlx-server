@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.18](https://github.com/panbanda/higgs/compare/higgs-v0.1.17...higgs-v0.1.18) (2026-02-28)
+
+
+### Bug Fixes
+
+* address review comments ([36c6484](https://github.com/panbanda/higgs/commit/36c6484acd486af7744507ebb974e5a62ecf1f93))
+* backtick TcpListener in doc comment for clippy doc_markdown ([94acea7](https://github.com/panbanda/higgs/commit/94acea7730105895be598bb04d9580de4ea3195a))
+* correct comment about signal handler behavior ([81cbd71](https://github.com/panbanda/higgs/commit/81cbd71e38957287cdc81c1e098bc4c8d81a7801))
+* improve Anthropic API compatibility ([16ee50d](https://github.com/panbanda/higgs/commit/16ee50d5b4d1e7e24bdbd3e7e97a2f8943b15a23))
+* improve Anthropic API compatibility ([ff7e96c](https://github.com/panbanda/higgs/commit/ff7e96c94b308cfe5d83ea8d162e96e2e50d7e0e))
+* log warning instead of silently discarding signal handler error ([6946974](https://github.com/panbanda/higgs/commit/6946974df001540b071ebc97bf7dc3fecfa68371))
+* use 128+signal convention for signal-killed child exit codes ([89b7ae0](https://github.com/panbanda/higgs/commit/89b7ae0cb98b3bf372d49b83f65ef8e23d5d722c))
+
 ## [0.1.17](https://github.com/panbanda/higgs/compare/higgs-v0.1.16...higgs-v0.1.17) (2026-02-27)
 
 
