@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.20](https://github.com/panbanda/higgs/compare/higgs-v0.1.19...higgs-v0.1.20) (2026-02-28)
+
+
+### Bug Fixes
+
+* restore pattern matching fallback in force routing mode ([c1bb2c3](https://github.com/panbanda/higgs/commit/c1bb2c39c2fc8a377a7fab2a0c792f3ec6794899))
+* restore pattern matching fallback in force routing mode ([217249f](https://github.com/panbanda/higgs/commit/217249f2612cde2bf92ac81d10228ee6c6b9b4f8))
+
 ## [0.1.19](https://github.com/panbanda/higgs/compare/higgs-v0.1.18...higgs-v0.1.19) (2026-02-28)
 
 
