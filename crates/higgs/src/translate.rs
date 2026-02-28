@@ -1241,4 +1241,101 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
         assert_eq!(parsed["system"], "Be helpful.\nBe concise.");
     }
+
+    #[test]
+    fn extract_tool_results_string_content() {
+        let blocks = vec![serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "tu_1",
+            "content": "hello world"
+        })];
+        let results = extract_tool_results(&blocks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0], ("tu_1".to_owned(), "hello world".to_owned()));
+    }
+
+    #[test]
+    fn extract_tool_results_array_content() {
+        let blocks = vec![serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "tu_2",
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"}
+            ]
+        })];
+        let results = extract_tool_results(&blocks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "first\n\nsecond");
+    }
+
+    #[test]
+    fn extract_tool_results_missing_content() {
+        let blocks = vec![serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "tu_3"
+        })];
+        let results = extract_tool_results(&blocks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "");
+    }
+
+    #[test]
+    fn extract_tool_results_mixed_blocks() {
+        let blocks = vec![
+            serde_json::json!({"type": "text", "text": "thinking..."}),
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": "tu_4",
+                "content": "result A"
+            }),
+            serde_json::json!({
+                "type": "tool_use",
+                "id": "tu_5",
+                "name": "foo",
+                "input": {}
+            }),
+            serde_json::json!({
+                "type": "tool_result",
+                "tool_use_id": "tu_6",
+                "content": "result B"
+            }),
+        ];
+        let results = extract_tool_results(&blocks);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0, "tu_4");
+        assert_eq!(results[1].0, "tu_6");
+    }
+
+    #[test]
+    fn extract_tool_results_empty_array_content() {
+        let blocks = vec![serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "tu_7",
+            "content": []
+        })];
+        let results = extract_tool_results(&blocks);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "");
+    }
+
+    #[test]
+    fn anthropic_to_openai_system_as_array() {
+        let body = serde_json::json!({
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "system": [
+                {"type": "text", "text": "You are helpful."},
+                {"type": "text", "text": "Be concise."}
+            ],
+            "max_tokens": 100
+        });
+        let result = anthropic_to_openai_request(body.to_string().as_bytes()).unwrap();
+        let parsed: serde_json::Value = serde_json::from_slice(&result).unwrap();
+
+        let messages = parsed["messages"].as_array().unwrap();
+        assert_eq!(messages[0]["role"], "system");
+        assert_eq!(messages[0]["content"], "You are helpful.\n\nBe concise.");
+        assert_eq!(messages[1]["role"], "user");
+    }
 }
